@@ -176,7 +176,7 @@ def upconvert_chroma(
 
 
 
-    zmq_pipe_out.send(uphet.astype(np.float32))
+    #zmq_pipe_out.send(uphet.astype(np.float32))
     #import matplotlib.pyplot as plt
     #fig, ax1 = plt.subplots()
     #ax1.plot(chroma_heterodyne[0][:910], color="#00FF00")
