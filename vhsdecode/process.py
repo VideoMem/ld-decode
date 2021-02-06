@@ -11,6 +11,9 @@ from lddecode.utils import unwrap_hilbert, inrange
 import vhsdecode.utils as utils
 
 import vhsdecode.formats as vhs_formats
+import vhsdecode.debug.zmq_grc as zm
+
+zmq_pipe_out = zm.ZMQSend()
 
 
 def toDB(val):
@@ -170,6 +173,15 @@ def upconvert_chroma(
             uphet[linestart:lineend] = line
 
             phase = (phase + phase_rotation) % 4
+
+
+
+    zmq_pipe_out.send(uphet.astype(np.float32))
+    #import matplotlib.pyplot as plt
+    #fig, ax1 = plt.subplots()
+    #ax1.plot(chroma_heterodyne[0][:910], color="#00FF00")
+    #plt.show()
+
     return uphet
 
 
@@ -1080,11 +1092,15 @@ class VHSDecode(ldd.LDdecode):
 
     def build_json(self, f):
         jout = super(VHSDecode, self).build_json(f)
-        black = jout["videoParameters"]["black16bIre"]
-        white = jout["videoParameters"]["white16bIre"]
+        try:
+            black = jout["videoParameters"]["black16bIre"]
+            white = jout["videoParameters"]["white16bIre"]
 
-        jout["videoParameters"]["black16bIre"] = black * (1 - self.level_adjust)
-        jout["videoParameters"]["white16bIre"] = white * (1 + self.level_adjust)
+            jout["videoParameters"]["black16bIre"] = black * (1 - self.level_adjust)
+            jout["videoParameters"]["white16bIre"] = white * (1 + self.level_adjust)
+        except TypeError as e:
+            print('Cannot build the JSON file: %s' % e)
+
         return jout
 
 
@@ -1226,17 +1242,16 @@ class VHSRFDecode(ldd.RFDecode):
 
         # Filter to pick out color-under chroma component.
         # filter at about twice the carrier. (This seems to be similar to what VCRs do)
-        chroma_lowpass = sps.butter(
+        chroma_bandpass = sps.butter(
             4, [0.05 / self.freq_half, 1.4 / self.freq_half], btype="bandpass"
         )  # sps.butter(4, [1.2/self.freq_half], btype='lowpass')
-        self.Filters["FVideoBurst"] = chroma_lowpass
+        self.Filters["FVideoBurst"] = chroma_bandpass
 
         # The following filters are for post-TBC:
         # The output sample rate is at approx 4fsc
         fsc_mhz = self.SysParams["fsc_mhz"]
         out_sample_rate_mhz = fsc_mhz * 4
         out_frequency_half = out_sample_rate_mhz / 2
-        het_freq = fsc_mhz + cc
         fieldlen = self.SysParams["outlinelen"] * max(self.SysParams["field_lines"])
 
         # Final band-pass filter for chroma output.
@@ -1263,20 +1278,21 @@ class VHSRFDecode(ldd.RFDecode):
         self.Filters["FChromaBurstCheck"] = chroma_burst_check
 
         # Bandpass filter to select heterodyne frequency from the mixed fsc and color carrier signal
-        het_filter = sps.butter(
-            2,
-            [
-                (het_freq - 0.001) / out_frequency_half,
-                (het_freq + 0.001) / out_frequency_half,
-            ],
-            btype="bandpass",
-        )
+        #het_filter = sps.butter(
+        #    2,
+        #    [
+        #        (het_freq - 0.001) / out_frequency_half,
+        #        (het_freq + 0.001) / out_frequency_half,
+        #    ],
+        #    btype="bandpass",
+        #)
         samples = np.arange(fieldlen)
 
         # As this is done on the tbced signal, we need the sampling frequency of that,
         # which is 4fsc for NTSC and approx. 4 fsc for PAL.
         # TODO: Correct frequency for pal?
-        cc_wave_scale = cc / out_sample_rate_mhz
+        het_freq = fsc_mhz - cc
+        cc_wave_scale = het_freq / out_sample_rate_mhz
         self.cc_ratio = cc_wave_scale
         # 0 phase downconverted color under carrier wave
         self.cc_wave = np.sin(2 * np.pi * cc_wave_scale * samples)
@@ -1301,18 +1317,11 @@ class VHSRFDecode(ldd.RFDecode):
         # color wave back.
         self.chroma_heterodyne = {}
 
-        self.chroma_heterodyne[0] = sps.filtfilt(
-            het_filter[0], het_filter[1], self.cc_wave * self.fsc_wave
-        )
-        self.chroma_heterodyne[1] = sps.filtfilt(
-            het_filter[0], het_filter[1], cc_wave_90 * self.fsc_wave
-        )
-        self.chroma_heterodyne[2] = sps.filtfilt(
-            het_filter[0], het_filter[1], cc_wave_180 * self.fsc_wave
-        )
-        self.chroma_heterodyne[3] = sps.filtfilt(
-            het_filter[0], het_filter[1], cc_wave_270 * self.fsc_wave
-        )
+        self.chroma_heterodyne[0] = self.cc_wave
+        self.chroma_heterodyne[1] = cc_wave_90
+        self.chroma_heterodyne[2] = cc_wave_180
+        self.chroma_heterodyne[3] = cc_wave_270
+
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
