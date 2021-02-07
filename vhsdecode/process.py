@@ -241,7 +241,7 @@ def process_chroma(field, track_phase, disable_deemph=False):
         starting_phase,
     )
 
-    # uphet = comb_c_pal(uphet,outwidth)
+    #uphet = comb_c_pal(uphet,outwidth)
 
     # Filter out unwanted frequencies from the final chroma signal.
     # Mixing the signals will produce waves at the difference and sum of the
