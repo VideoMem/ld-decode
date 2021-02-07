@@ -12,6 +12,8 @@ import vhsdecode.utils as utils
 
 import vhsdecode.formats as vhs_formats
 import vhsdecode.debug.zmq_grc as zm
+from collections import deque
+
 
 zmq_pipe_out = zm.ZMQSend()
 
@@ -164,9 +166,8 @@ def upconvert_chroma(
             linestart = (linenumber - lineoffset) * outwidth
             lineend = linestart + outwidth
 
-            heterodyne = chroma_heterodyne[phase][linestart:lineend]
-
             c = chroma[linestart:lineend]
+            heterodyne = chroma_heterodyne[phase][linestart:lineend]
 
             line = heterodyne * c
 
@@ -174,7 +175,7 @@ def upconvert_chroma(
 
             phase = (phase + phase_rotation) % 4
 
-
+            #zmq_pipe_out.send(heterodyne.astype(np.float32))
 
     #zmq_pipe_out.send(uphet.astype(np.float32))
     #import matplotlib.pyplot as plt
@@ -1277,31 +1278,7 @@ class VHSRFDecode(ldd.RFDecode):
         )
         self.Filters["FChromaBurstCheck"] = chroma_burst_check
 
-        # Bandpass filter to select heterodyne frequency from the mixed fsc and color carrier signal
-        #het_filter = sps.butter(
-        #    2,
-        #    [
-        #        (het_freq - 0.001) / out_frequency_half,
-        #        (het_freq + 0.001) / out_frequency_half,
-        #    ],
-        #    btype="bandpass",
-        #)
         samples = np.arange(fieldlen)
-
-        # As this is done on the tbced signal, we need the sampling frequency of that,
-        # which is 4fsc for NTSC and approx. 4 fsc for PAL.
-        # TODO: Correct frequency for pal?
-        het_freq = fsc_mhz - cc
-        cc_wave_scale = het_freq / out_sample_rate_mhz
-        self.cc_ratio = cc_wave_scale
-        # 0 phase downconverted color under carrier wave
-        self.cc_wave = np.sin(2 * np.pi * cc_wave_scale * samples)
-        # +90 deg and so on phase wave for track2 phase rotation
-        cc_wave_90 = np.sin((2 * np.pi * cc_wave_scale * samples) + (np.pi / 2))  #
-        cc_wave_180 = np.sin((2 * np.pi * cc_wave_scale * samples) + np.pi)
-        cc_wave_270 = np.sin(
-            (2 * np.pi * cc_wave_scale * samples) + np.pi + (np.pi / 2)
-        )
 
         # Standard frequency color carrier wave.
         self.fsc_wave = utils.gen_wave_at_frequency(
@@ -1315,12 +1292,27 @@ class VHSRFDecode(ldd.RFDecode):
         # We combine the color carrier with a wave with a frequency of the
         # subcarrier + the downconverted chroma carrier to get the original
         # color wave back.
-        self.chroma_heterodyne = {}
 
-        self.chroma_heterodyne[0] = self.cc_wave
-        self.chroma_heterodyne[1] = cc_wave_90
-        self.chroma_heterodyne[2] = cc_wave_180
-        self.chroma_heterodyne[3] = cc_wave_270
+        het_freq = fsc_mhz - cc  # if sums, remove the - in self.cc_wave
+        cc_wave_scale = het_freq / out_sample_rate_mhz
+        self.cc_ratio = cc_wave_scale
+        # 0 phase downconverted color under carrier wave
+        self.cc_wave = - np.sin(2 * np.pi * cc_wave_scale * samples)
+
+        Fc_half_pi = round(out_sample_rate_mhz / (4 * cc))
+        carrier = deque(self.cc_wave)
+        carrier.rotate(Fc_half_pi)
+        phase_90 = np.asarray(carrier)
+        carrier.rotate(Fc_half_pi)
+        phase_180 = np.asarray(carrier)
+        carrier.rotate(Fc_half_pi)
+        phase_270 = np.asarray(carrier)
+        self.chroma_heterodyne = {
+            0: self.cc_wave,
+            1: phase_90,
+            2: phase_180,
+            3: phase_270
+        }
 
 
     def computedelays(self, mtf_level=0):
