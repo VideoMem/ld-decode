@@ -108,7 +108,7 @@ void Comb::updateConfiguration(const LdDecodeMetaData::VideoParameters &_videoPa
 }
 
 void Comb::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                        QVector<RGBFrame> &outputFrames)
+                        QVector<videoFrame> &outputFrames)
 {
     assert(configurationSet);
     assert((outputFrames.size() * 2) == (endIndex - startIndex));
@@ -172,8 +172,9 @@ void Comb::decodeFrames(const QVector<SourceField> &inputFields, qint32 startInd
         currentFrameBuffer->doYNR();
         currentFrameBuffer->doCNR();
 
-        // Convert the YIQ result to RGB
-        outputFrames[frameIndex] = currentFrameBuffer->yiqToRgbFrame();
+        // Convert the YIQ result to RGB or YCbCr
+        outputFrames[frameIndex] = configuration.outputYUV ? currentFrameBuffer->yiqToYUVFrame() :
+                                                             currentFrameBuffer->yiqToRGBFrame();
 
         // Overlay the map if required
         if (configuration.dimensions == 3 && configuration.showMap) {
@@ -662,14 +663,51 @@ void Comb::FrameBuffer::doYNR()
     }
 }
 
-// Convert buffer from YIQ to RGB 16-16-16
-RGBFrame Comb::FrameBuffer::yiqToRgbFrame()
+// Convert buffer from YIQ to planer YUV444p16
+videoFrame Comb::FrameBuffer::yiqToYUVFrame()
 {
-    RGBFrame rgbOutputFrame;
-    rgbOutputFrame.resize(videoParameters.fieldWidth * frameHeight * 3); // for RGB 16-16-16
+    videoFrame OutputFrame;
+
+    OutputFrame.y.resize(videoParameters.fieldWidth * frameHeight);
+    OutputFrame.u.resize(videoParameters.fieldWidth * frameHeight);
+    OutputFrame.v.resize(videoParameters.fieldWidth * frameHeight);
 
     // Initialise the output frame
-    rgbOutputFrame.fill(0);
+    OutputFrame.y.fill(16*256);
+    OutputFrame.u.fill(128*256);
+    OutputFrame.v.fill(128*256);
+
+    // Initialise YIQ to YUV converter
+    YUV yuv(videoParameters.white16bIre, videoParameters.black16bIre, configuration.whitePoint75, configuration.chromaGain);
+
+    // Perform YIQ to YUV rotation
+    for (qint32 lineNumber = videoParameters.firstActiveFrameLine; lineNumber < videoParameters.lastActiveFrameLine; lineNumber++) {
+        // Get a pointer to each plane
+        quint16 *linePointerY = OutputFrame.y.data() + (videoParameters.fieldWidth * lineNumber);
+        quint16 *linePointerU = OutputFrame.u.data() + (videoParameters.fieldWidth * lineNumber);
+        quint16 *linePointerV = OutputFrame.v.data() + (videoParameters.fieldWidth * lineNumber);
+
+        // Offset the output by the activeVideoStart to keep the output frame
+        // in the same x position as the input video frame
+        qint32 o = videoParameters.activeVideoStart;
+
+        // Fill the output line with the YUV values
+        yuv.convertLine(&yiqBuffer[lineNumber][videoParameters.activeVideoStart],
+                        &yiqBuffer[lineNumber][videoParameters.activeVideoEnd],
+                        &linePointerY[o],&linePointerU[o],&linePointerV[o]);
+    }
+    return OutputFrame;
+}
+
+// Convert buffer from YIQ to RGB48
+videoFrame Comb::FrameBuffer::yiqToRGBFrame()
+{
+    videoFrame OutputFrame;
+
+    OutputFrame.RGB.resize(videoParameters.fieldWidth * frameHeight * 3); // for RGB 16-16-16
+
+    // Initialise the output frame
+    OutputFrame.RGB.fill(0);
 
     // Initialise YIQ to RGB converter
     RGB rgb(videoParameters.white16bIre, videoParameters.black16bIre, configuration.whitePoint75, configuration.chromaGain);
@@ -677,7 +715,7 @@ RGBFrame Comb::FrameBuffer::yiqToRgbFrame()
     // Perform YIQ to RGB conversion
     for (qint32 lineNumber = videoParameters.firstActiveFrameLine; lineNumber < videoParameters.lastActiveFrameLine; lineNumber++) {
         // Get a pointer to the line
-        quint16 *linePointer = rgbOutputFrame.data() + (videoParameters.fieldWidth * 3 * lineNumber);
+        quint16 *linePointer = OutputFrame.RGB.data() + (videoParameters.fieldWidth * 3 * lineNumber);
 
         // Offset the output by the activeVideoStart to keep the output frame
         // in the same x position as the input video frame
@@ -688,20 +726,19 @@ RGBFrame Comb::FrameBuffer::yiqToRgbFrame()
                         &yiqBuffer[lineNumber][videoParameters.activeVideoEnd],
                         &linePointer[o]);
     }
-
-    // Return the RGB frame data
-    return rgbOutputFrame;
+    return OutputFrame;
 }
 
+
 // Convert buffer from YIQ to RGB
-void Comb::FrameBuffer::overlayMap(const FrameBuffer &previousFrame, const FrameBuffer &nextFrame, RGBFrame &rgbFrame)
+void Comb::FrameBuffer::overlayMap(const FrameBuffer &previousFrame, const FrameBuffer &nextFrame, videoFrame &rgbFrame)
 {
     qDebug() << "Comb::FrameBuffer::overlayMap(): Overlaying map onto RGB output";
 
     // Overlay the map on the output RGB
     for (qint32 lineNumber = videoParameters.firstActiveFrameLine; lineNumber < videoParameters.lastActiveFrameLine; lineNumber++) {
         // Get a pointer to the line
-        quint16 *linePointer = rgbFrame.data() + (videoParameters.fieldWidth * 3 * lineNumber);
+        quint16 *linePointer = rgbFrame.RGB.data() + (videoParameters.fieldWidth * 3 * lineNumber);
 
         const quint16 *lineData = rawbuffer.data() + (lineNumber * videoParameters.fieldWidth);
 

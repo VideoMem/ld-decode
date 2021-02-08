@@ -1,6 +1,6 @@
 /************************************************************************
 
-    rgbframe.h
+    videoframe.h
 
     ld-chroma-decoder - Colourisation filter for ld-decode
     Copyright (C) 2020 Adam Sampson
@@ -22,13 +22,20 @@
 
 ************************************************************************/
 
-#ifndef RGBFRAME_H
-#define RGBFRAME_H
+#ifndef VIDEOFRAME_H
+#define VIDEOFRAME_H
 
 #include <QtGlobal>
 #include <QVector>
 
-// A decoded frame, containing triples of (R, G, B) samples
-using RGBFrame = QVector<quint16>;
+// A decoded frame, containing triples of (Y, U, V) samples
+// using YUVFrame = struct{ QVector<quint16>, QVector<quint16>, QVector<quint16> };
+typedef struct
+{
+    QVector<quint16> RGB;
+    QVector<quint16> y;
+    QVector<quint16> u;
+    QVector<quint16> v;
+} videoFrame;
 
-#endif // RGBFRAME_H
+#endif // VIDEOFRAME_H

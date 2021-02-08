@@ -245,7 +245,7 @@ void PalColour::buildLookUpTables()
 }
 
 void PalColour::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                             QVector<RGBFrame> &outputFrames)
+                             QVector<videoFrame> &outputFrames)
 {
     assert(configurationSet);
     assert((outputFrames.size() * 2) == (endIndex - startIndex));
@@ -259,8 +259,8 @@ void PalColour::decodeFrames(const QVector<SourceField> &inputFields, qint32 sta
     // Resize and clear the output buffers
     const qint32 frameHeight = (videoParameters.fieldHeight * 2) - 1;
     for (qint32 i = 0; i < outputFrames.size(); i++) {
-        outputFrames[i].resize(videoParameters.fieldWidth * frameHeight * 3);
-        outputFrames[i].fill(0);
+        outputFrames[i].RGB.resize(videoParameters.fieldWidth * frameHeight * 3);
+        outputFrames[i].RGB.fill(0);
     }
 
     const double chromaGain = configuration.chromaGain;
@@ -277,7 +277,7 @@ void PalColour::decodeFrames(const QVector<SourceField> &inputFields, qint32 sta
 }
 
 // Decode one field into outputFrame
-void PalColour::decodeField(const SourceField &inputField, const double *chromaData, double chromaGain, RGBFrame &outputFrame)
+void PalColour::decodeField(const SourceField &inputField, const double *chromaData, double chromaGain, videoFrame &outputFrame)
 {
     // Pointer to the composite signal data
     const quint16 *compPtr = inputField.data.data();
@@ -410,7 +410,7 @@ void PalColour::doYNR(double *Yline)
 // inputField, or it may be pre-filtered down to chroma.
 template <typename ChromaSample, bool PREFILTERED_CHROMA>
 void PalColour::decodeLine(const SourceField &inputField, const ChromaSample *chromaData, const LineInfo &line, double chromaGain,
-                           RGBFrame &outputFrame)
+                           videoFrame &outputFrame)
 {
     // Dummy black line, used when the filter needs to look outside the active region.
     static constexpr ChromaSample blackLine[MAX_WIDTH] = {0};
@@ -540,7 +540,7 @@ void PalColour::decodeLine(const SourceField &inputField, const ChromaSample *ch
     const quint16 *comp = inputField.data.data() + (line.number * videoParameters.fieldWidth);
 
     // Define scan line pointer to output buffer using 16 bit unsigned words
-    quint16 *ptr = outputFrame.data() + (((line.number * 2) + inputField.getOffset()) * videoParameters.fieldWidth * 3);
+    quint16 *ptr = outputFrame.RGB.data() + (((line.number * 2) + inputField.getOffset()) * videoParameters.fieldWidth * 3);
 
     // Gain for the Y component, to put reference black at 0 and reference white at 65535
     const double scaledContrast = 65535.0 / (videoParameters.white16bIre - videoParameters.black16bIre);

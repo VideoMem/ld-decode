@@ -31,6 +31,7 @@
 NtscDecoder::NtscDecoder(const Comb::Configuration &combConfig)
 {
     config.combConfig = combConfig;
+    config.outputYUV = combConfig.outputYUV;
 }
 
 bool NtscDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParameters) {
@@ -70,9 +71,9 @@ NtscThread::NtscThread(QAtomicInt& _abort, DecoderPool &_decoderPool,
 }
 
 void NtscThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<RGBFrame> &outputFrames)
+                              QVector<videoFrame> &outputFrames)
 {
-    QVector<RGBFrame> decodedFrames(outputFrames.size());
+    QVector<videoFrame> decodedFrames(outputFrames.size());
 
     // Decode fields to frames
     comb.decodeFrames(inputFields, startIndex, endIndex, decodedFrames);

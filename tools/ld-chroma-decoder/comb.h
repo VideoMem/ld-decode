@@ -35,7 +35,8 @@
 #include "lddecodemetadata.h"
 
 #include "rgb.h"
-#include "rgbframe.h"
+#include "yuv.h"
+#include "videoframe.h"
 #include "sourcefield.h"
 #include "yiq.h"
 
@@ -53,6 +54,7 @@ public:
         qint32 dimensions = 2;
         bool adaptive = true;
         bool showMap = false;
+        bool outputYUV = false;
 
         double cNRLevel = 0.0;
         double yNRLevel = 1.0;
@@ -67,7 +69,7 @@ public:
 
     // Decode a sequence of fields into a sequence of interlaced frames
     void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<RGBFrame> &outputFrames);
+                      QVector<videoFrame> &outputFrames);
 
     // Maximum frame size
     static constexpr qint32 MAX_WIDTH = 910;
@@ -99,8 +101,9 @@ private:
         void doCNR();
         void doYNR();
 
-        RGBFrame yiqToRgbFrame();
-        void overlayMap(const FrameBuffer &previousFrame, const FrameBuffer &nextFrame, RGBFrame &rgbOutputFrame);
+        videoFrame yiqToRGBFrame();
+        videoFrame yiqToYUVFrame();
+        void overlayMap(const FrameBuffer &previousFrame, const FrameBuffer &nextFrame, videoFrame &OutputFrame);
 
     private:
         const LdDecodeMetaData::VideoParameters &videoParameters;

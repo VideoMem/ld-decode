@@ -33,6 +33,7 @@
 #include "lddecodemetadata.h"
 #include "sourcevideo.h"
 
+#include "comb.h"
 #include "decoder.h"
 #include "sourcefield.h"
 
@@ -41,6 +42,7 @@ class DecoderPool;
 // Decoder that passes all input through as luma, for purely monochrome sources
 class MonoDecoder : public Decoder {
 public:
+    MonoDecoder(const Comb::Configuration &combConfig);
     bool configure(const LdDecodeMetaData::VideoParameters &videoParameters) override;
     QThread *makeThread(QAtomicInt& abort, DecoderPool& decoderPool) override;
 
@@ -58,14 +60,14 @@ public:
 
 protected:
     void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<RGBFrame> &outputFrames) override;
+                      QVector<videoFrame> &outputFrames) override;
 
 private:
     // Settings
     const MonoDecoder::Configuration &config;
 
     // The frame being assembled
-    RGBFrame outputFrame;
+    videoFrame outputFrame;
 };
 
 #endif // MONODECODER
