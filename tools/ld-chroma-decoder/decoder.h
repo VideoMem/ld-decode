@@ -32,7 +32,7 @@
 
 #include "lddecodemetadata.h"
 
-#include "rgbframe.h"
+#include "videoframe.h"
 #include "sourcefield.h"
 
 class DecoderPool;
@@ -83,6 +83,7 @@ public:
         LdDecodeMetaData::VideoParameters videoParameters;
         qint32 topPadLines;
         qint32 bottomPadLines;
+        bool outputYUV = false;
     };
 
     // Compute the output frame size in Configuration, adjusting the active
@@ -90,7 +91,7 @@ public:
     static void setVideoParameters(Configuration &config, const LdDecodeMetaData::VideoParameters &videoParameters);
 
     // Crop a full decoded frame to the output frame size
-    static RGBFrame cropOutputFrame(const Configuration &config, const RGBFrame &outputData);
+    static videoFrame cropOutputFrame(const Configuration &config, const videoFrame &outputData);
 };
 
 // Abstract base class for chroma decoder worker threads.
@@ -104,7 +105,7 @@ protected:
 
     // Decode a sequence of fields into a sequence of frames
     virtual void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<RGBFrame> &outputFrames) = 0;
+                              QVector<videoFrame> &outputFrames) = 0;
 
     // Decoder pool
     QAtomicInt& abort;

@@ -157,6 +157,11 @@ int main(int argc, char *argv[])
                                        QCoreApplication::translate("main", "Output in black and white"));
     parser.addOption(setBwModeOption);
 
+    // Option to output planar YCbCr (--yuv)
+    QCommandLineOption outputYUVOption(QStringList() << "yuv",
+                                       QCoreApplication::translate("main", "Output planar YCbCr instead of RGB"));
+    parser.addOption(outputYUVOption);
+
     // Option to select which decoder to use (-f)
     QCommandLineOption decoderOption(QStringList() << "f" << "decoder",
                                      QCoreApplication::translate("main", "Decoder to use (pal2d, transform2d, transform3d, ntsc1d, ntsc2d, ntsc3d, ntsc3dnoadapt, mono; default automatic)"),
@@ -317,6 +322,10 @@ int main(int argc, char *argv[])
         combConfig.chromaGain = 0.0;
     }
 
+    if (parser.isSet(outputYUVOption)) {
+        combConfig.outputYUV = true;
+    }
+
     if (parser.isSet(whitePointOption)) {
         combConfig.whitePoint75 = true;
     }
@@ -374,8 +383,18 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (parser.isSet(outputYUVOption)) {
+        combConfig.outputYUV = true;
+        palConfig.outputYUV = true;
+    }
+
     if (parser.isSet(showFFTsOption)) {
         palConfig.showFFTs = true;
+        if (palConfig.outputYUV ) {
+            // Quit with error
+            qCritical("YUV output not available when showFFT is enable");
+            return -1;
+        }
     }
 
     // Work out the metadata filename
@@ -419,11 +438,11 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    // Select the decoder
     QScopedPointer<Decoder> decoder;
+    // Select the decoder
     if (decoderName == "pal2d") {
         decoder.reset(new PalDecoder(palConfig));
-    } else if (decoderName == "transform2d") {
+    } else if (decoderName == "transformd2d") {
         palConfig.chromaFilter = PalColour::transform2DFilter;
         if (!loadTransformThresholds(parser, transformThresholdsOption, palConfig)) {
             return -1;
@@ -449,7 +468,7 @@ int main(int argc, char *argv[])
         combConfig.adaptive = false;
         decoder.reset(new NtscDecoder(combConfig));
     } else if (decoderName == "mono") {
-        decoder.reset(new MonoDecoder);
+        decoder.reset(new MonoDecoder(combConfig));
     } else {
         qCritical() << "Unknown decoder " << decoderName;
         return -1;

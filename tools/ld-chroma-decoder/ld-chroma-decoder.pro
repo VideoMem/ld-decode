@@ -25,6 +25,7 @@ SOURCES += \
     palcolour.cpp \
     paldecoder.cpp \
     rgb.cpp \
+    yuv.cpp \
     sourcefield.cpp \
     transformpal.cpp \
     transformpal2d.cpp \
@@ -45,7 +46,8 @@ HEADERS += \
     palcolour.h \
     paldecoder.h \
     rgb.h \
-    rgbframe.h \
+    yuv.h \
+    videoframe.h \
     sourcefield.h \
     transformpal.h \
     transformpal2d.h \

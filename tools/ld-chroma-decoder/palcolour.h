@@ -34,7 +34,7 @@
 
 #include "lddecodemetadata.h"
 
-#include "rgbframe.h"
+#include "videoframe.h"
 #include "sourcefield.h"
 #include "transformpal.h"
 
@@ -63,6 +63,7 @@ public:
         TransformPal::TransformMode transformMode = TransformPal::thresholdMode;
         double transformThreshold = 0.4;
         QVector<double> transformThresholds;
+        bool outputYUV = false;
         bool showFFTs = false;
         qint32 showPositionX = 200;
         qint32 showPositionY = 200;
@@ -78,7 +79,7 @@ public:
 
     // Decode a sequence of fields into a sequence of interlaced frames
     void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<RGBFrame> &outputFrames);
+                      QVector<videoFrame> &outputFrames);
 
     // Maximum frame size, based on PAL
     static constexpr qint32 MAX_WIDTH = 1135;
@@ -94,12 +95,12 @@ private:
     };
 
     void buildLookUpTables();
-    void decodeField(const SourceField &inputField, const double *chromaData, double chromaGain, RGBFrame &outputFrame);
+    void decodeField(const SourceField &inputField, const double *chromaData, double chromaGain, videoFrame &outputFrame);
     void detectBurst(LineInfo &line, const quint16 *inputData);
     void doYNR(double *inY);
     template <typename ChromaSample, bool PREFILTERED_CHROMA>
     void decodeLine(const SourceField &inputField, const ChromaSample *chromaData, const LineInfo &line, double chromaGain,
-                    RGBFrame &outputFrame);
+                    videoFrame &outputFrame);
 
     // Configuration parameters
     bool configurationSet;

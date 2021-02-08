@@ -178,7 +178,7 @@ bool DecoderPool::getInputFrames(qint32 &startFrameNumber, QVector<SourceField> 
     return true;
 }
 
-bool DecoderPool::putOutputFrames(qint32 startFrameNumber, const QVector<RGBFrame> &outputFrames)
+bool DecoderPool::putOutputFrames(qint32 startFrameNumber, const QVector<videoFrame> &outputFrames)
 {
     QMutexLocker locker(&outputMutex);
 
@@ -199,21 +199,39 @@ bool DecoderPool::putOutputFrames(qint32 startFrameNumber, const QVector<RGBFram
 // whether we can now write some of them out.
 //
 // Returns true on success, false on failure.
-bool DecoderPool::putOutputFrame(qint32 frameNumber, const RGBFrame &outputFrame)
+bool DecoderPool::putOutputFrame(qint32 frameNumber, const videoFrame &outputFrame)
 {
     // Put this frame into the map
     pendingOutputFrames[frameNumber] = outputFrame;
 
     // Write out as many frames as possible
     while (pendingOutputFrames.contains(outputFrameNumber)) {
-        const RGBFrame& outputData = pendingOutputFrames.value(outputFrameNumber);
+        const videoFrame& outputData = pendingOutputFrames.value(outputFrameNumber);
 
         // Save the frame data to the output file
-        if (!targetVideo.write(reinterpret_cast<const char *>(outputData.data()), outputData.size() * 2)) {
-            // Could not write to target video file
-            qCritical() << "Writing to the output video file failed";
-            return false;
+        if (outputData.y.size()) {
+            QVector<quint16> yuv;
+            yuv << outputData.y << outputData.u << outputData.v;
+            if (!targetVideo.write(reinterpret_cast<const char *>(yuv.data()), yuv.size() * 2)) {
+                // Could not write to target video file
+                qCritical() << "Writing to the output video file failed";
+                return false;
+            }
+            /*if (!targetVideo.write(reinterpret_cast<const char *>(outputData.y.data()), outputData.y.size() * 2) &&
+                !targetVideo.write(reinterpret_cast<const char *>(outputData.u.data()), outputData.u.size() * 2) &&
+                !targetVideo.write(reinterpret_cast<const char *>(outputData.v.data()), outputData.v.size() * 2) ) { //hack
+                // Could not write to target video file
+                qCritical() << "Writing to the output video file failed";
+                return false;
+            }*/
+        } else {
+            if (!targetVideo.write(reinterpret_cast<const char *>(outputData.RGB.data()), outputData.RGB.size() * 2)) {
+                // Could not write to target video file
+                qCritical() << "Writing to the output video file failed";
+                return false;
+            }
         }
+
 
         pendingOutputFrames.remove(outputFrameNumber);
         outputFrameNumber++;

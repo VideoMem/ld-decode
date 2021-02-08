@@ -78,32 +78,50 @@ void Decoder::setVideoParameters(Decoder::Configuration &config, const LdDecodeM
     // Show output information to the user
     const qint32 frameHeight = (videoParameters.fieldHeight * 2) - 1;
     qInfo() << "Input video of" << config.videoParameters.fieldWidth << "x" << frameHeight <<
-               "will be colourised and trimmed to" << outputWidth << "x" << outputHeight << "RGB 16-16-16 frames";
+               "will be colourised and trimmed to" << outputWidth << "x" << outputHeight << (config.outputYUV ? "YUV444p" : "RGB48") << "frames";
 }
 
-RGBFrame Decoder::cropOutputFrame(const Decoder::Configuration &config, const RGBFrame &outputData) {
+videoFrame Decoder::cropOutputFrame(const Decoder::Configuration &config, const videoFrame &outputData) {
     const qint32 activeVideoStart = config.videoParameters.activeVideoStart;
     const qint32 activeVideoEnd = config.videoParameters.activeVideoEnd;
-    const qint32 outputLineLength = (activeVideoEnd - activeVideoStart) * 3;
+    qint32 outputLineLength = (activeVideoEnd - activeVideoStart);
 
-    RGBFrame croppedData;
-
-    // Insert padding at the top
-    if (config.topPadLines > 0) {
-        croppedData.insert(croppedData.begin(), config.topPadLines * outputLineLength, 0);
+    videoFrame croppedData;
+    if (config.outputYUV) {
+        // Insert padding at the top
+        if (config.topPadLines > 0) {
+            croppedData.y.insert(croppedData.y.begin(), config.topPadLines * outputLineLength, 16 *256);
+            croppedData.u.insert(croppedData.u.begin(), config.topPadLines * outputLineLength, 128*256);
+            croppedData.v.insert(croppedData.v.begin(), config.topPadLines * outputLineLength, 128*256);
+        }
+        // Copy the active region from the decoded image
+        for (qint32 y = config.videoParameters.firstActiveFrameLine; y < config.videoParameters.lastActiveFrameLine; y++) {
+            croppedData.y.append(outputData.y.mid((y * config.videoParameters.fieldWidth) + activeVideoStart, outputLineLength));
+            croppedData.u.append(outputData.u.mid((y * config.videoParameters.fieldWidth) + activeVideoStart, outputLineLength));
+            croppedData.v.append(outputData.v.mid((y * config.videoParameters.fieldWidth) + activeVideoStart, outputLineLength));
+        }
+        // Insert padding at the bottom
+        if (config.bottomPadLines > 0) {
+            croppedData.y.insert(croppedData.y.end(), config.bottomPadLines * outputLineLength, 16 *256);
+            croppedData.u.insert(croppedData.u.end(), config.bottomPadLines * outputLineLength, 128*256);
+            croppedData.v.insert(croppedData.v.end(), config.bottomPadLines * outputLineLength, 128*256);
+        }
+    } else {
+        outputLineLength *=3;
+        // Insert padding at the top
+        if (config.topPadLines > 0) {
+            croppedData.RGB.insert(croppedData.RGB.begin(), config.topPadLines * outputLineLength, 0);
+        }
+        // Copy the active region from the decoded image
+        for (qint32 y = config.videoParameters.firstActiveFrameLine; y < config.videoParameters.lastActiveFrameLine; y++) {
+            croppedData.RGB.append(outputData.RGB.mid((y * config.videoParameters.fieldWidth * 3) + (activeVideoStart * 3),
+                                              outputLineLength));
+        }
+        // Insert padding at the bottom
+        if (config.bottomPadLines > 0) {
+            croppedData.RGB.insert(croppedData.RGB.end(), config.bottomPadLines * outputLineLength, 0);
+        }
     }
-
-    // Copy the active region from the decoded image
-    for (qint32 y = config.videoParameters.firstActiveFrameLine; y < config.videoParameters.lastActiveFrameLine; y++) {
-        croppedData.append(outputData.mid((y * config.videoParameters.fieldWidth * 3) + (activeVideoStart * 3),
-                                          outputLineLength));
-    }
-
-    // Insert padding at the bottom
-    if (config.bottomPadLines > 0) {
-        croppedData.insert(croppedData.end(), config.bottomPadLines * outputLineLength, 0);
-    }
-
     return croppedData;
 }
 
@@ -116,7 +134,7 @@ void DecoderThread::run()
 {
     // Input and output data
     QVector<SourceField> inputFields;
-    QVector<RGBFrame> outputFrames;
+    QVector<videoFrame> outputFrames;
 
     while (!abort) {
         // Get the next batch of fields to process

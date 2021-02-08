@@ -28,12 +28,16 @@
 #include "decoderpool.h"
 #include "palcolour.h"
 
+MonoDecoder::MonoDecoder(const Comb::Configuration &combConfig)
+{
+    config.outputYUV = combConfig.outputYUV;
+}
+
 bool MonoDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParameters) {
     // This decoder works for both PAL and NTSC.
 
     // Compute cropping parameters
     setVideoParameters(config, videoParameters);
-
     return true;
 }
 
@@ -47,17 +51,24 @@ MonoThread::MonoThread(QAtomicInt& _abort, DecoderPool& _decoderPool,
 {
     // Resize and clear the output buffer
     const qint32 frameHeight = (config.videoParameters.fieldHeight * 2) - 1;
-    outputFrame.resize(config.videoParameters.fieldWidth * frameHeight * 3);
-    outputFrame.fill(0);
+    outputFrame.RGB.resize(config.videoParameters.fieldWidth * frameHeight * 3);
+    outputFrame.RGB.fill(0);
+
+    outputFrame.y.resize(config.videoParameters.fieldWidth * frameHeight);
+    outputFrame.y.fill(16*256);
+    outputFrame.u.resize(config.videoParameters.fieldWidth * frameHeight);
+    outputFrame.u.fill(128*256);
+    outputFrame.v.resize(config.videoParameters.fieldWidth * frameHeight);
+    outputFrame.v.fill(128*256);
+
 }
 
 void MonoThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<RGBFrame> &outputFrames)
+                              QVector<videoFrame> &outputFrames)
 {
     // Work out black-white scaling factors
     const LdDecodeMetaData::VideoParameters &videoParameters = config.videoParameters;
     const quint16 blackOffset = videoParameters.black16bIre;
-    const double whiteScale = 65535.0 / (videoParameters.white16bIre - videoParameters.black16bIre);
 
     for (qint32 fieldIndex = startIndex, frameIndex = 0; fieldIndex < endIndex; fieldIndex += 2, frameIndex++) {
         // Interlace the active lines of the two input fields to produce an output frame
@@ -66,15 +77,24 @@ void MonoThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 st
 
             // Each quint16 input becomes three quint16 outputs
             const quint16 *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
-            quint16 *outputLine = outputFrame.data() + (y * videoParameters.fieldWidth * 3);
 
-            for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
-                const quint16 value = static_cast<quint16>(qBound(0.0, (inputLine[x] - blackOffset) * whiteScale, 65535.0));
-
-                const qint32 outputPos = x * 3;
-                outputLine[outputPos] = value;
-                outputLine[outputPos + 1] = value;
-                outputLine[outputPos + 2] = value;
+            if (config.outputYUV) {
+                const double whiteScale = 219.0 * 257.0 / (videoParameters.white16bIre - blackOffset);
+                for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
+                    quint16 value = static_cast<quint16>(qBound(0.0, (inputLine[x] - blackOffset) * whiteScale + 16*256, 65535.0));
+                    quint16 *outputLine = outputFrame.y.data() + (y * videoParameters.fieldWidth);
+                    outputLine[x] = value;
+                }
+            } else {
+                const double whiteScale = 65535.0 / (videoParameters.white16bIre - blackOffset);
+                for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
+                    quint16 value = static_cast<quint16>(qBound(0.0, (inputLine[x] - blackOffset) * whiteScale, 65535.0));
+                    quint16 *outputLine = outputFrame.RGB.data() + (y * videoParameters.fieldWidth * 3);
+                    const qint32 outputPos = x * 3;
+                    outputLine[outputPos] = value;
+                    outputLine[outputPos + 1] = value;
+                    outputLine[outputPos + 2] = value;
+                }
             }
         }
 
