@@ -148,7 +148,7 @@ int main(int argc, char *argv[])
 
     // Option to specify chroma gain
     QCommandLineOption chromaGainOption(QStringList() << "chroma-gain",
-                                        QCoreApplication::translate("main", "Gain factor applied to chroma components (default 1.0)"),
+                                        QCoreApplication::translate("main", "Gain factor applied to chroma components (default 1.0 NTSC, 0.5 PAL)"),
                                         QCoreApplication::translate("main", "number"));
     parser.addOption(chromaGainOption);
 
@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
 
     // Option to set the luma noise reduction level
     QCommandLineOption lumaNROption(QStringList() << "luma-nr",
-                                    QCoreApplication::translate("main", "NTSC: Luma noise reduction level in dB (default 1.0)"),
+                                    QCoreApplication::translate("main", "Luma noise reduction level in dB (default 1.0)"),
                                     QCoreApplication::translate("main", "number"));
     parser.addOption(lumaNROption);
 
@@ -222,6 +222,16 @@ int main(int argc, char *argv[])
     QCommandLineOption showFFTsOption(QStringList() << "show-ffts",
                                       QCoreApplication::translate("main", "Transform: Overlay the input and output FFTs"));
     parser.addOption(showFFTsOption);
+
+    // Option to overlay the FFTs
+    QCommandLineOption ntscPhaseComp(QStringList() << "ntsc-phase-comp",
+                                      QCoreApplication::translate("main", "Use NTSC QADM decoder taking burst phase into account (BETA)"));
+    parser.addOption(ntscPhaseComp);
+
+    // Option to overlay the FFTs
+    QCommandLineOption colorLPF(QStringList() << "color-lpf",
+                                      QCoreApplication::translate("main", "NTSC: Use Chroma post-filter"));
+    parser.addOption(colorLPF);
 
     // -- Positional arguments --
 
@@ -337,6 +347,7 @@ int main(int argc, char *argv[])
 
     if (parser.isSet(lumaNROption)) {
         combConfig.yNRLevel = parser.value(lumaNROption).toDouble();
+        palConfig.yNRLevel = parser.value(lumaNROption).toDouble();
 
         if (combConfig.yNRLevel < 0.0) {
             // Quit with error
@@ -375,6 +386,14 @@ int main(int argc, char *argv[])
 
     if (parser.isSet(showFFTsOption)) {
         palConfig.showFFTs = true;
+    }
+
+    if (parser.isSet(ntscPhaseComp)) {
+        combConfig.phaseCompensation = true;
+    }
+
+    if (parser.isSet(colorLPF)) {
+        combConfig.colorlpf = true;
     }
 
     // Work out the metadata filename

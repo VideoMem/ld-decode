@@ -44,7 +44,7 @@ ChromaDecoderConfigDialog::ChromaDecoderConfigDialog(QWidget *parent) :
 
     ui->yNRHorizontalSlider->setMinimum(0);
     ui->yNRHorizontalSlider->setMaximum(100);
-
+    
     // Update the dialogue
     updateDialog();
 }
@@ -57,14 +57,16 @@ ChromaDecoderConfigDialog::~ChromaDecoderConfigDialog()
 void ChromaDecoderConfigDialog::setConfiguration(bool _isSourcePal, const PalColour::Configuration &_palConfiguration,
                                                  const Comb::Configuration &_ntscConfiguration)
 {
+    double yNRLevel = _isSourcePal ? palConfiguration.yNRLevel : ntscConfiguration.yNRLevel;
     isSourcePal = _isSourcePal;
     palConfiguration = _palConfiguration;
     ntscConfiguration = _ntscConfiguration;
 
     palConfiguration.chromaGain = qBound(0.0, palConfiguration.chromaGain, 2.0);
     palConfiguration.transformThreshold = qBound(0.0, palConfiguration.transformThreshold, 1.0);
+    palConfiguration.yNRLevel = qBound(0.0, yNRLevel, 10.0);
     ntscConfiguration.cNRLevel = qBound(0.0, ntscConfiguration.cNRLevel, 10.0);
-    ntscConfiguration.yNRLevel = qBound(0.0, ntscConfiguration.yNRLevel, 10.0);
+    ntscConfiguration.yNRLevel = qBound(0.0, yNRLevel, 10.0);
 
     // For settings that both decoders share, the PAL default takes precedence
     ntscConfiguration.chromaGain = palConfiguration.chromaGain;
@@ -99,6 +101,11 @@ void ChromaDecoderConfigDialog::updateDialog()
 
     ui->chromaGainValueLabel->setEnabled(true);
     ui->chromaGainValueLabel->setText(QString::number(palConfiguration.chromaGain, 'f', 2));
+    
+    double yNRLevel = isSourcePal ? palConfiguration.yNRLevel : ntscConfiguration.yNRLevel;
+    
+    ui->yNRHorizontalSlider->setValue(static_cast<qint32>(yNRLevel * 10));
+    ui->yNRValueLabel->setText(QString::number(yNRLevel, 'f', 1) + " IRE");
 
     // PAL settings
 
@@ -141,6 +148,7 @@ void ChromaDecoderConfigDialog::updateDialog()
 
     const bool isSourceNtsc = !isSourcePal;
 
+    ui->phaseCompCheckBox->setEnabled(isSourceNtsc);
     ui->ntscFilter2DRadioButton->setEnabled(isSourceNtsc);
     ui->ntscFilter3DRadioButton->setEnabled(isSourceNtsc);
 
@@ -178,14 +186,6 @@ void ChromaDecoderConfigDialog::updateDialog()
 
     ui->cNRValueLabel->setEnabled(isSourceNtsc);
     ui->cNRValueLabel->setText(QString::number(ntscConfiguration.cNRLevel, 'f', 1) + " IRE");
-
-    ui->yNRLabel->setEnabled(isSourceNtsc);
-
-    ui->yNRHorizontalSlider->setEnabled(isSourceNtsc);
-    ui->yNRHorizontalSlider->setValue(static_cast<qint32>(ntscConfiguration.yNRLevel * 10));
-
-    ui->yNRValueLabel->setEnabled(isSourceNtsc);
-    ui->yNRValueLabel->setText(QString::number(ntscConfiguration.yNRLevel, 'f', 1) + " IRE");
 }
 
 // Methods to handle changes to the dialogue
@@ -254,6 +254,12 @@ void ChromaDecoderConfigDialog::on_ntscFilterButtonGroup_buttonClicked(QAbstract
     emit chromaDecoderConfigChanged();
 }
 
+void ChromaDecoderConfigDialog::on_phaseCompCheckBox_clicked()
+{
+    ntscConfiguration.phaseCompensation = ui->phaseCompCheckBox->isChecked();
+    emit chromaDecoderConfigChanged();
+}
+
 void ChromaDecoderConfigDialog::on_adaptiveCheckBox_clicked()
 {
     ntscConfiguration.adaptive = ui->adaptiveCheckBox->isChecked();
@@ -294,6 +300,7 @@ void ChromaDecoderConfigDialog::on_cNRHorizontalSlider_valueChanged(int value)
 
 void ChromaDecoderConfigDialog::on_yNRHorizontalSlider_valueChanged(int value)
 {
+    palConfiguration.yNRLevel = static_cast<double>(value) / 10;
     ntscConfiguration.yNRLevel = static_cast<double>(value) / 10;
     ui->yNRValueLabel->setText(QString::number(ntscConfiguration.yNRLevel, 'f', 1) + " IRE");
     emit chromaDecoderConfigChanged();
