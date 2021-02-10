@@ -1418,11 +1418,11 @@ class VHSRFDecode(ldd.RFDecode):
         # subcarrier + the downconverted chroma carrier to get the original
         # color wave back.
 
-        het_freq = fsc_mhz - cc  # if sums, remove the - in self.cc_wave
+        het_freq = fsc_mhz + cc  # if sums, remove the - in self.cc_wave
         cc_wave_scale = het_freq / out_sample_rate_mhz
         self.cc_ratio = cc_wave_scale
         # 0 phase downconverted color under carrier wave
-        self.cc_wave = - np.sin(2 * np.pi * cc_wave_scale * samples)
+        self.cc_wave = np.sin(2 * np.pi * cc_wave_scale * samples)
 
         Fc_half_pi = round(out_sample_rate_mhz / (4 * cc))
         carrier = deque(self.cc_wave)
