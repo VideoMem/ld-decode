@@ -69,7 +69,7 @@ def logging_test():
     print("Logging test beginning:")
     logger = init_logging(fname)
 
-    logger.debug("logger.debug")
+    logger.debug("logger.addons")
     logger.status("Status line 1 - a bit longer than 2")
     time.sleep(1)
     logger.status("Status line 2")
