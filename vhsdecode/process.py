@@ -1253,10 +1253,12 @@ class VTRDemodCache(ldd.DemodCache):
         )
         self.is_vtr = True
         self.zmq_out = None  # it will be initialized at worker side
+        self.zmq_in = None
 
     def worker(self, pipein):
         try:
             self.zmq_out = zm.ZMQSend()
+            self.zmq_in = zm.ZMQReceive(port=5566)
         except zmq.error.ZMQError as e:
             print('Cannot initialize zmq_worker %s' % e)
 
@@ -1287,7 +1289,8 @@ class VTRDemodCache(ldd.DemodCache):
                     or np.abs(block["MTF"] - target_MTF) > self.MTF_tolerance
                 ):
                     output["demod"] = self.rf.demodblock(
-                        fftdata=fftdata, mtf_level=target_MTF, cut=True, zmq=self.zmq_out
+                        fftdata=fftdata, mtf_level=target_MTF, cut=True,
+                        zmq=self.zmq_out, zmq_in=self.zmq_in
                     )
                     output["MTF"] = target_MTF
 
@@ -1531,6 +1534,11 @@ class VHSRFDecode(ldd.RFDecode):
             2: phase_180,
             3: phase_270
         }
+        self.amplitude_sums = 0
+        self.amplitude_count = 0
+        self.min_sum = 0
+        self.new_amp_sum = 0
+
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
@@ -1543,7 +1551,7 @@ class VHSRFDecode(ldd.RFDecode):
         self.delays["video_sync"] = 0
         self.delays["video_white"] = 0
 
-    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmq=None):
+    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmq=None, zmq_in=None):
         rv = {}
 
         if fftdata is not None:
@@ -1558,17 +1566,45 @@ class VHSRFDecode(ldd.RFDecode):
 
         indata_fft_filt = indata_fft * self.Filters["RFVideo"]
         rf_filtered = np.fft.ifft(indata_fft_filt)
-        #rf_real = self.Yf[0].work(rf_filtered.real)
-        #rf_imag = self.Yf[1].work(rf_filtered.imag)
-        #filtered_hilbert = rf_real + 1j * rf_imag
+
         if zmq is not None:
+            out_samples = len(rf_filtered)
             zmq.send_complex(rf_filtered)
+            manual_gain = 0.8
+
+            return_video = np.round(
+                3473247.466 +
+                np.clip(zmq_in.receive(out_samples), 0, 7) *
+                manual_gain * 1404432.92 / 6.638).astype(np.int)
 
         demod = unwrap_hilbert(rf_filtered, self.freq_hz)
 
         demod_fft = np.fft.fft(demod)
 
-        out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
+        old_demod = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
+
+        """
+        print('min old %d, max old %d :: min new %d, max new %d' % (
+              min(old_demod), max(old_demod),
+              min(return_video), max(return_video)
+            )
+        )
+
+        self.min_sum += min(old_demod)
+        old_amplitude = max(old_demod) - min(old_demod)
+        new_amplitude = max(return_video) - min(return_video)
+        self.amplitude_sums += old_amplitude
+        self.new_amp_sum += new_amplitude
+        self.amplitude_count += 1
+        print('amp old %.3f :: amp new %.3f :: min %.3f' % (
+              self.amplitude_sums / self.amplitude_count,
+              self.new_amp_sum / self.amplitude_count,
+              self.min_sum / self.amplitude_count
+            )
+        )
+        """
+
+        out_video = return_video
 
         out_video05 = out_video  # np.fft.ifft(demod_fft * self.Filters["FVideo05"]).real
         # out_video05 = np.roll(out_video05, -self.Filters["F05_offset"])
@@ -1596,15 +1632,15 @@ class VHSRFDecode(ldd.RFDecode):
             # ax1.plot((20 * np.log10(self.Filters["Fdeemp"])))
             #        ax1.plot(hilbert, color='#FF0000')
             # ax1.plot(data, color="#00FF00")
-            #            ax1.axhline(self.iretohz(0))
-            #            ax1.axhline(self.iretohz(self.SysParams["vsync_ire"]))
-            #            ax1.axhline(self.iretohz(7.5))
-            #            ax1.axhline(self.iretohz(100))
+            ax1.axhline(self.iretohz(0))
+            ax1.axhline(self.iretohz(self.SysParams["vsync_ire"]))
+            ax1.axhline(self.iretohz(7.5))
+            ax1.axhline(self.iretohz(100))
             # print("Vsync IRE", self.SysParams["vsync_ire"])
             #            ax2 = ax1.twinx()
             #            ax3 = ax1.twinx()
-            ax1.plot(demod, color="#FFFF00")
-            ax1.plot(out_video, color="#FF0000")
+            ax1.plot(return_video, color="#FFFF00")
+            ax1.plot(old_demod, color="#FF0000")
             #            crossings = find_crossings(env, 700)
             #            ax3.plot(crossings, color="#0000FF")
             plt.show()

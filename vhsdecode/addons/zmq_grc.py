@@ -31,7 +31,6 @@ class ZMQSend:
         data = np.empty((complex.real.size + complex.imag.size,), dtype=np.float32)
         data[0::2] = complex.real.astype(np.float32)
         data[1::2] = complex.imag.astype(np.float32)
-        #print('go!', complex.real, complex.imag, data)
         self.socket.send(data)
 
 
@@ -48,7 +47,23 @@ class ZMQReceive:
         assert os.getpid() == self.pid, \
             "You cannot call send from another thread: expected %d found %d" % (self.pid, pid)
 
-    def receive(self):
+    def receive(self, samples):
         self.chekcpid()
-        self.socket.send_string("hello")
-        return self.socket.recv()
+
+        floats = []
+        reads = 0
+        read_size = 0
+        while read_size < samples:
+            try:
+                #print('asking for data')
+                self.socket.send_string('0', encoding='ascii')
+                byte_stream = self.socket.recv()
+                floats = np.append(floats, np.fromstring(byte_stream, dtype=np.float32))
+                read_size = len(floats)
+                #print('received data %d', read_size)
+                reads += 1
+            except zmq.error.ZMQError as e:
+                print('Got ZMQ error, %s' % e)
+                break
+        #print('got data, after %d reads' % reads)
+        return floats
