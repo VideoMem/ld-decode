@@ -10,6 +10,15 @@ def gen_wave_at_frequency(frequency, sample_frequency, num_samples, gen_func=np.
     return gen_func(2 * np.pi * wave_scale * samples)
 
 
+def moving_average(data_list, window=1024):
+    average = sum(data_list) / len(data_list)
+
+    if len(data_list) >= window:
+        data_list.pop()
+
+    return average
+
+
 def design_lowpass(samp_rate, cutoff, transition_width, order_limit=6):
     passband, stopband = cutoff, cutoff + transition_width
     max_loss_passband = 3  # The maximum loss allowed in the passband

@@ -60,7 +60,7 @@ class ZMQReceive:
                 byte_stream = self.socket.recv()
                 floats = np.append(floats, np.fromstring(byte_stream, dtype=np.float32))
                 read_size = len(floats)
-                #print('received data %d', read_size)
+                #print('received data %d' % read_size)
                 reads += 1
             except zmq.error.ZMQError as e:
                 print('Got ZMQ error, %s' % e)
