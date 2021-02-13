@@ -1590,7 +1590,7 @@ class VHSRFDecode(ldd.RFDecode):
 
         # switches between internal demodulator and external one
         if zmqio[0] is None:
-            demod, out_video = self.hilbert_demod(indata_fft)
+            demod, demod_fft, out_video = self.hilbert_demod(indata_fft)
         else:
             indata_fft_filt = indata_fft * self.Filters["RFVideo"]
             rf_filtered = np.fft.ifft(indata_fft_filt)
