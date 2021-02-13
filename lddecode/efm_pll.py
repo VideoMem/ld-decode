@@ -178,7 +178,7 @@ class EFM_PLL:
         # keep any error to maintain accuracy
         self.refClockTime -= sampleDelta
 
-        # Use this addons if you want to monitor the PLL output frequency
+        # Use this debug if you want to monitor the PLL output frequency
         # print("Base =", self.basePeriod, "current = ", self.currentPeriod, file=sys.stderr)
 
 
