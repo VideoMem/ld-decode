@@ -17,7 +17,8 @@ class ZMQSend:
         self.socket.bind("tcp://*:%s" % port)
 
     def chekcpid(self):
-        assert os.getpid() == self.pid, \
+        pid = os.getpid()
+        assert pid == self.pid, \
             "You cannot call send from another thread: expected %d found %d" % (self.pid, pid)
 
     def send(self, data):
@@ -44,8 +45,9 @@ class ZMQReceive:
         self.socket.connect("tcp://localhost:%s" % port)
 
     def chekcpid(self):
-        assert os.getpid() == self.pid, \
-            "You cannot call send from another thread: expected %d found %d" % (self.pid, pid)
+        pid = os.getpid()
+        assert pid == self.pid, \
+            "You cannot call receive from another thread: expected %d found %d" % (self.pid, pid)
 
     def receive(self, samples):
         self.chekcpid()

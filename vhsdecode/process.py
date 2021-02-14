@@ -15,6 +15,8 @@ import vhsdecode.formats as vhs_formats
 import zmq
 import vhsdecode.addons.zmq_grc as zm
 from collections import deque
+from fractions import Fraction
+from samplerate import resample
 
 try:
     import pyfftw.interfaces.numpy_fft as npfft
@@ -1545,7 +1547,10 @@ class VHSRFDecode(ldd.RFDecode):
         assert len(out_video) == out_samples, \
             'Something gone wrong at external demod, expected samples %d, received %d' % (len(out_video), out_samples)
 
-        return out_video, out_video
+        demod_fft = np.fft.fft(out_video)
+        out_video = self.luma_comb(out_video)
+
+        return out_video, demod_fft, out_video
 
     def hilbert_demod(self, fftdata):
         indata_fft_filt = fftdata * self.Filters["RFVideo"]
@@ -1575,7 +1580,34 @@ class VHSRFDecode(ldd.RFDecode):
             )
         )
 
-    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=False):
+    # It resamples the luminance data to 4 * Fc
+    # Applies the comb filter, then resamples it back
+    # The converter params are the same as in libsamplerate:
+    # In ascending quality/complexity order:
+    #   zero_order_hold, linear, sinc_fastest, sinc_best
+    def luma_comb(self, luminance, converter='linear'):
+        quotients_limit = int(1e4)
+        Fc = int(self.SysParams["fsc_mhz"] * 4 * 1e6)
+        ratio = Fraction(Fc/self.freq_hz).limit_denominator(quotients_limit)
+        dw_ratio = ratio.numerator / ratio.denominator
+        up_ratio = ratio.denominator / ratio.numerator
+        downsampled = resample(luminance, ratio=dw_ratio, converter_type=converter)
+        delayed = deque(downsampled.copy())
+        delayed.rotate(-2)
+        combed = np.multiply(np.add(downsampled, np.asarray(delayed)), 0.5)
+        result = resample(combed, ratio=up_ratio, converter_type=converter)
+        if len(luminance) > len(result):
+            err = len(luminance) - len(result)
+            result = np.append(result, luminance[len(luminance) - err: len(luminance)])
+        else:
+            result = result[:len(luminance)]
+
+        assert len(luminance) == len(result), \
+            'Something wrong happened during the comb filtering stage. Expected samples %d, got %d' % \
+            (len(luminance), len(result))
+        return result
+
+    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=True):
         rv = {}
 
         if fftdata is not None:
@@ -1588,13 +1620,13 @@ class VHSRFDecode(ldd.RFDecode):
         if data is None:
             data = np.fft.ifft(indata_fft).real
 
-        # switches between internal demodulator and external one
+        # switches between internal demodulator and the external one
         if zmqio[0] is None:
             demod, demod_fft, out_video = self.hilbert_demod(indata_fft)
         else:
             indata_fft_filt = indata_fft * self.Filters["RFVideo"]
             rf_filtered = np.fft.ifft(indata_fft_filt)
-            demod, out_video = self.external_demod(zmqio, rf_filtered)
+            demod, demod_fft, out_video = self.external_demod(zmqio, rf_filtered)
             if amp_comp:
                 demod, demod_fft, int_video = self.hilbert_demod(indata_fft)
                 self.amplitude_log(out_video, int_video)
