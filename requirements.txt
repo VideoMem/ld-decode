@@ -5,3 +5,4 @@ numba~=0.49.0
 Pillow~=5.1.0
 pyzmq~=16.0.2
 samplerate~=0.1.0
+pyhht~=0.1.0

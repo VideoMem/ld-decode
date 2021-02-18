@@ -37,6 +37,12 @@ def firdes_lowpass(samp_rate, cutoff, transition_width, order_limit=6):
     return signal.butter(order, normal_cutoff, btype="lowpass", fs=samp_rate)
 
 
+def firdes_highpass(samp_rate, cutoff, transition_width, order_limit=6):
+    passband, stopband, order, normal_cutoff =\
+        design_lowpass(samp_rate, cutoff, transition_width, order_limit)
+    return signal.butter(order, normal_cutoff, btype="highpass", fs=samp_rate)
+
+
 def filter_plot(iir_b, iir_a, samp_rate, type, title):
     import matplotlib.pyplot as plt
     from math import log10
@@ -68,6 +74,6 @@ class FilterWithState:
         return self.samp_rate
 
     def work(self, data):
-        output, self.z = signal.lfilter(self.iir_b, self.iir_a, data, zi=self.z)
+        output = signal.filtfilt(self.iir_b, self.iir_a, data)
         return output
 

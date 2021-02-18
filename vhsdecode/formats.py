@@ -44,6 +44,7 @@ RFParams_PAL_VHS["deemph_gain"] = 15
 
 # Band-pass filter for Video rf.
 # TODO: Needs tweaking
+RFParams_NTSC_VHS['VCO_deviation'] = 1e6
 RFParams_NTSC_VHS["video_bpf_low"] = 3350000
 RFParams_NTSC_VHS["video_bpf_high"] = 5600000
 
