@@ -8,6 +8,7 @@ import itertools
 import lddecode.core as ldd
 import lddecode.utils as lddu
 import vhsdecode.utils as utils
+import vhsdecode.tape_dtw as dtw
 from lddecode.utils import unwrap_hilbert
 
 import vhsdecode.formats as vhs_formats
@@ -1517,11 +1518,15 @@ class VHSRFDecode(ldd.RFDecode):
         yiir_b, yiir_a = utils.firdes_lowpass(self.freq_hz, 2.2e6, 800e3, order_limit=20)
         fmhipass = utils.firdes_highpass(self.freq_hz, 2.4e6, 500e3, order_limit=20)
         fmlopass = utils.firdes_lowpass(self.freq_hz, 6.4e6, 3e6, order_limit=20)
-        self.luma_limit = utils.FilterWithState(yiir_b, yiir_a, self.freq_hz)
+        #fmhipass = utils.firdes_highpass(self.freq_hz, 3490000, 500e3, order_limit=1)
+        #fmlopass = utils.firdes_lowpass(self.freq_hz, 5580000, 3e6, order_limit=1)
+
+        self.luma_limit = utils.FiltersClass(yiir_b, yiir_a, self.freq_hz)
         self.YFM_filter = {
-            0: utils.FilterWithState(fmhipass[0], fmhipass[1], self.freq_hz),
-            1: utils.FilterWithState(fmlopass[0], fmlopass[1], self.freq_hz),
+            0: utils.FiltersClass(fmhipass[0], fmhipass[1], self.freq_hz),
+            1: utils.FiltersClass(fmlopass[0], fmlopass[1], self.freq_hz),
         }
+        self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"], self.freq_hz)
         #utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
         #utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
         print('Set samplerate at: %d Hz' % self.freq_hz)
@@ -1565,7 +1570,11 @@ class VHSRFDecode(ldd.RFDecode):
 
         return out_video, demod_fft, out_video
 
-    def hilbert_demod(self, fftdata):
+    def hilbert_demod(self, data):
+
+        hi = self.YFM_filter[0].work(data)
+        pre_filtered = self.YFM_filter[1].work(hi)
+        fftdata = np.fft.fft(pre_filtered)
         indata_fft_filt = fftdata * self.Filters["RFVideo"]
         rf_filtered = np.fft.ifft(indata_fft_filt)
         demod = unwrap_hilbert(rf_filtered, self.freq_hz)
@@ -1695,8 +1704,8 @@ class VHSRFDecode(ldd.RFDecode):
             #rf_filtered = np.fft.ifft(indata_fft_filt)
             #demod, demod_fft, int_video = self.external_demod(zmqio, rf_filtered)
             if amp_comp:
-                _, _, int_video = self.hilbert_demod(indata_fft)
-                demod, demod_fft, out_video = self.hilbert_huang_demod(data)
+                _, _, out_video = self.hilbert_demod(data)
+                demod, demod_fft, int_video = self.hilbert_huang_demod(data)
 
                 self.amplitude_log(out_video, int_video)
 
@@ -1705,7 +1714,10 @@ class VHSRFDecode(ldd.RFDecode):
 
         # Filter out the color-under signal from the raw data.
         out_chroma = filter_simple(data[: self.blocklen], self.Filters["FVideoBurst"])
-        zmqio[0].send(out_chroma)
+        zmqio[0].send(
+            self.dtw.head_switch_jitter(out_chroma)
+        )
+
         # Move chroma to compensate for Y filter delay.
         # value needs tweaking, ideally it should be calculated if possible.
         # TODO: Not sure if we need this after hilbert filter change, needs check.

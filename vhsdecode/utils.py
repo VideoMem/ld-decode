@@ -19,8 +19,7 @@ def moving_average(data_list, window=1024):
     return average
 
 
-def design_lowpass(samp_rate, cutoff, transition_width, order_limit=6):
-    passband, stopband = cutoff, cutoff + transition_width
+def design_filter(samp_rate, passband, stopband, order_limit=20):
     max_loss_passband = 3  # The maximum loss allowed in the passband
     min_loss_stopband = 30  # The minimum loss allowed in the stopband
     order, normal_cutoff = signal.buttord(passband, stopband, max_loss_passband,
@@ -28,19 +27,29 @@ def design_lowpass(samp_rate, cutoff, transition_width, order_limit=6):
     if order > order_limit:
         print('WARN: Limiting order of the filter from %d to %d' % (order, order_limit))
         order = order_limit
-    return passband, stopband, order, normal_cutoff
+    return order, normal_cutoff
 
 
-def firdes_lowpass(samp_rate, cutoff, transition_width, order_limit=6):
-    passband, stopband, order, normal_cutoff =\
-        design_lowpass(samp_rate, cutoff, transition_width, order_limit)
+def firdes_lowpass(samp_rate, cutoff, transition_width, order_limit=20):
+    passband, stopband = cutoff, cutoff + transition_width
+    order, normal_cutoff =\
+        design_filter(samp_rate, passband, stopband, order_limit)
     return signal.butter(order, normal_cutoff, btype="lowpass", fs=samp_rate)
 
 
-def firdes_highpass(samp_rate, cutoff, transition_width, order_limit=6):
-    passband, stopband, order, normal_cutoff =\
-        design_lowpass(samp_rate, cutoff, transition_width, order_limit)
+def firdes_highpass(samp_rate, cutoff, transition_width, order_limit=20):
+    passband, stopband = cutoff, cutoff - transition_width
+    order, normal_cutoff =\
+        design_filter(samp_rate, passband, stopband, order_limit)
     return signal.butter(order, normal_cutoff, btype="highpass", fs=samp_rate)
+
+
+def firdes_bandpass(samp_rate, f0, t0, f1, t1, order_limit=20):
+    assert f0 < f1, 'First frequency specified is higher than the second one, swap them'
+    passband, stopband = (f1, f1 + t1), (f0, f0 - t0)
+    order, normal_cutoff =\
+        design_filter(samp_rate, passband, stopband, order_limit)
+    return signal.butter(order, normal_cutoff, btype="bandpass", fs=samp_rate)
 
 
 def filter_plot(iir_b, iir_a, samp_rate, type, title):
@@ -64,7 +73,7 @@ def filter_plot(iir_b, iir_a, samp_rate, type, title):
     plt.show()
 
 
-class FilterWithState:
+class FiltersClass:
     def __init__(self, iir_b, iir_a, samp_rate):
         self.iir_b, self.iir_a = iir_b, iir_a
         self.z = signal.lfilter_zi(self.iir_b, self.iir_a)
@@ -77,3 +86,6 @@ class FilterWithState:
         output = signal.filtfilt(self.iir_b, self.iir_a, data)
         return output
 
+    def workl(self, data):
+        output, self.z = signal.lfilter(self.iir_b, self.iir_a, data, zi=self.z)
+        return output
