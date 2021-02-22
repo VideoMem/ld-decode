@@ -1526,7 +1526,9 @@ class VHSRFDecode(ldd.RFDecode):
             0: utils.FiltersClass(fmhipass[0], fmhipass[1], self.freq_hz),
             1: utils.FiltersClass(fmlopass[0], fmlopass[1], self.freq_hz),
         }
-        self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"], self.freq_hz)
+        self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
+                                  self.SysParams["FPS"] * 2,
+                                  self.freq_hz)
         #utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
         #utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
         print('Set samplerate at: %d Hz' % self.freq_hz)
@@ -1714,8 +1716,9 @@ class VHSRFDecode(ldd.RFDecode):
 
         # Filter out the color-under signal from the raw data.
         out_chroma = filter_simple(data[: self.blocklen], self.Filters["FVideoBurst"])
-        zmqio[0].send(
-            self.dtw.head_switch_jitter(out_chroma)
+        hsj = self.dtw.head_switch_jitter(out_chroma)
+        zmqio[0].send_complex(
+            hsj[0] + 1j * hsj[1]
         )
 
         # Move chroma to compensate for Y filter delay.
