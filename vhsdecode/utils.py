@@ -1,7 +1,6 @@
 import numpy as np
 import scipy.signal as signal
-from lddecode.utils import pi, tau
-
+import matplotlib.pyplot as plt
 
 def gen_wave_at_frequency(frequency, sample_frequency, num_samples, gen_func=np.sin):
     """Generate a sine wave with the specified parameters."""
@@ -10,8 +9,51 @@ def gen_wave_at_frequency(frequency, sample_frequency, num_samples, gen_func=np.
     return gen_func(2 * np.pi * wave_scale * samples)
 
 
+def gen_compl_wave_at_frequency(frequency, sample_frequency, num_samples):
+    """Generate a sine wave with the specified parameters."""
+    samples = np.arange(num_samples)
+    wave_scale = frequency / sample_frequency
+    return np.exp(-2 * np.pi * wave_scale * samples * 1j)
+
+
+def zero_cross_det(data):
+    return np.where(np.diff(np.sign(data)))[0]
+
+
+def auto_chop(data):
+    zeroes = zero_cross_det(data)
+    first = zeroes[0]
+    last = zeroes[len(zeroes) - 1]
+    sign_first = data[first + 1]
+    sign_last = data[last + 1]
+
+    if sign_first > 0 and sign_last > 0:
+        last = last
+    else:
+        last = zeroes[len(zeroes) - 2]
+
+    return data[first:last], first, last
+
+
+def plot_scope(data):
+    fig, ax1 = plt.subplots()
+    ax1.plot(data, color="#FF0000")
+    plt.show()
+
+
+def pad_or_truncate(data, filler):
+    if len(filler) > len(data):
+        err = len(filler) - len(data)
+        data = np.append(data, filler[len(data) - err: len(data)])
+    else:
+        data = data[len(data) - len(filler):]
+
+    return data
+
+
 def moving_average(data_list, window=1024):
-    average = sum(data_list) / len(data_list)
+    average = np.mean(data_list)
+        # sum(data_list) / len(data_list)
 
     if len(data_list) >= window:
         data_list.pop()

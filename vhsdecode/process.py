@@ -1515,7 +1515,7 @@ class VHSRFDecode(ldd.RFDecode):
         self.int_min = list()
         self.min_ext_demod = list()
         self.min_demod = list()
-        yiir_b, yiir_a = utils.firdes_lowpass(self.freq_hz, 2.2e6, 800e3, order_limit=20)
+        yiir_b, yiir_a = utils.firdes_lowpass(self.freq_hz, 2.7e6, 800e3, order_limit=20)
         fmhipass = utils.firdes_highpass(self.freq_hz, 2.4e6, 500e3, order_limit=20)
         fmlopass = utils.firdes_lowpass(self.freq_hz, 6.4e6, 3e6, order_limit=20)
         #fmhipass = utils.firdes_highpass(self.freq_hz, 3490000, 500e3, order_limit=1)
@@ -1529,8 +1529,12 @@ class VHSRFDecode(ldd.RFDecode):
         self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
                                   self.SysParams["FPS"] * 2,
                                   self.freq_hz)
+        self.cdtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
+                                  self.SysParams["FPS"] * 2,
+                                  self.freq_hz)
         #utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
         #utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
+        self.zeroblock = np.zeros(pow(2,15))
         print('Set samplerate at: %d Hz' % self.freq_hz)
 
     def computedelays(self, mtf_level=0):
@@ -1574,9 +1578,9 @@ class VHSRFDecode(ldd.RFDecode):
 
     def hilbert_demod(self, data):
 
-        hi = self.YFM_filter[0].work(data)
-        pre_filtered = self.YFM_filter[1].work(hi)
-        fftdata = np.fft.fft(pre_filtered)
+        #hi = self.YFM_filter[0].work(data)
+        #pre_filtered = self.YFM_filter[1].work(hi)
+        fftdata = np.fft.fft(data)
         indata_fft_filt = fftdata * self.Filters["RFVideo"]
         rf_filtered = np.fft.ifft(indata_fft_filt)
         demod = unwrap_hilbert(rf_filtered, self.freq_hz)
@@ -1603,37 +1607,44 @@ class VHSRFDecode(ldd.RFDecode):
     def alt_fm_demod(self, data):
         demod, t = inst_freq(data)
         demod = np.append(demod, np.zeros(2))
-        demod = np.multiply(demod, -self.freq_hz)
+        demod = np.add(np.multiply(demod, -self.freq_hz), self.freq_hz / 2)
         return demod
 
     def hilbert_huang_demod(self, data):
 
-        #indata_fft_filt = fftdata * self.Filters["RFVideo"]
-        #rf_filtered = np.fft.ifft(indata_fft_filt)
+        # second RF AFE filter
+        hi = self.YFM_filter[0].workl(data)
+        rf_filtered = self.YFM_filter[1].workl(hi)
+
+        #First RF filter AFE
+        fftdata = np.fft.fft(rf_filtered)
+        indata_fft_filt = fftdata * self.Filters["RFVideo"]
+        rf_filtered = np.fft.ifft(indata_fft_filt)
+
         #imfs = self.do_emd(rf_filtered.real)
         #hht_fft = np.fft.fft(imf0)
         #indata_fft_filt = hht_fft * self.Filters["RFVideo"]
         #out_samples = len(data)
 
-        # RF AFE filter
-        hi = self.YFM_filter[0].work(data)
-        rf_filtered = self.YFM_filter[1].work(hi)
+
         #imfs = self.do_emd(rf_filtered.real) #+ 1j * self.do_emd(rf_filtered.imag)
 
         #FM demod
         demod = self.alt_fm_demod(rf_filtered.real)
+
         #alt_demod = unwrap_hilbert(imfs, self.freq_hz)
 
         #DC removal
         self.min_demod.append(min(demod))
-        #self.min_ext_demod.append(min(alt_demod))
         demod -= utils.moving_average(self.min_demod, window=self.SysParams["frame_lines"])
+        #demod += self.iretohz(self.SysParams["vsync_ire"]) / 2
+
         #alt_demod -= utils.moving_average(self.min_ext_demod, window=self.SysParams["frame_lines"])
 
 
         demod_fft = np.fft.fft(demod)
         out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
-        out_video = self.YNR(out_video)
+        #out_video = self.YNR(out_video)
         out_video = self.luma_limit.work(out_video)
         #assert len(out_video) == out_samples
         return demod, demod_fft, out_video
@@ -1674,12 +1685,14 @@ class VHSRFDecode(ldd.RFDecode):
         delayed.rotate(delay)
         combed = np.multiply(np.add(downsampled, np.asarray(delayed)), 0.5)
         result = resample(combed, ratio=up_ratio, converter_type=converter)
+        """
         if len(luminance) > len(result):
             err = len(luminance) - len(result)
             result = np.append(result, luminance[len(luminance) - err: len(luminance)])
         else:
             result = result[:len(luminance)]
-
+        """
+        result = utils.pad_or_truncate(result, luminance)
         assert len(luminance) == len(result), \
             'Something wrong happened during the comb filtering stage. Expected samples %d, got %d' % \
             (len(luminance), len(result))
@@ -1687,16 +1700,27 @@ class VHSRFDecode(ldd.RFDecode):
 
     def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=True):
         rv = {}
+        #rdata, stats = self.dtw.velocity_compensator(data)
+        #data = utils.pad_or_truncate(rdata, data)
+        #fftdata = np.fft.fft(data[: self.blocklen])
 
-        if fftdata is not None:
-            indata_fft = fftdata
-        elif data is not None:
-            indata_fft = np.fft.fft(data[: self.blocklen])
-        else:
-            raise Exception("demodblock called without raw or FFT data")
+        resampled = self.cdtw.velocity_compensator(data)
+        hsj = self.dtw.head_switch_jitter(resampled)
+        zmqio[0].send_complex(
+            hsj[0] + 1j * hsj[1]
+        )
+        data = resampled
+        indata_fft = np.fft.fft(data[: self.blocklen])
 
-        if data is None:
-            data = np.fft.ifft(indata_fft).real
+        #if fftdata is not None:
+        #    indata_fft = fftdata
+        #elif data is not None:
+        #    indata_fft = np.fft.fft(data[: self.blocklen])
+        #else:
+        #    raise Exception("demodblock called without raw or FFT data")
+
+        #if data is None:
+        #    data = np.fft.ifft(indata_fft).real
 
         # switches between internal demodulator and the external one
         if zmqio[0] is None:
@@ -1706,8 +1730,11 @@ class VHSRFDecode(ldd.RFDecode):
             #rf_filtered = np.fft.ifft(indata_fft_filt)
             #demod, demod_fft, int_video = self.external_demod(zmqio, rf_filtered)
             if amp_comp:
-                _, _, out_video = self.hilbert_demod(data)
-                demod, demod_fft, int_video = self.hilbert_huang_demod(data)
+                _, _, int_video = self.hilbert_demod(data)
+                demod, demod_fft, out_video = self.hilbert_huang_demod(data)
+                # assert not np.isnan(out_video).any() and not np.isnan(out_chroma).any(), 'Got NAN at demodblock()'
+                # assert len(out_video) == len(self.zeroblock)
+                # print('After max:', min(out_video), max(out_video))
 
                 self.amplitude_log(out_video, int_video)
 
@@ -1716,10 +1743,6 @@ class VHSRFDecode(ldd.RFDecode):
 
         # Filter out the color-under signal from the raw data.
         out_chroma = filter_simple(data[: self.blocklen], self.Filters["FVideoBurst"])
-        hsj = self.dtw.head_switch_jitter(out_chroma)
-        zmqio[0].send_complex(
-            hsj[0] + 1j * hsj[1]
-        )
 
         # Move chroma to compensate for Y filter delay.
         # value needs tweaking, ideally it should be calculated if possible.
@@ -1734,7 +1757,9 @@ class VHSRFDecode(ldd.RFDecode):
         # Calculate an evelope with signal strength using absolute of hilbert transform.
         env = np.abs(hilbt(raw_filtered))
 
-        if False:
+        assert len(out_video) == pow(2, 15), 'Unexpected uneven block'
+
+        if True:
             import matplotlib.pyplot as plt
 
             fig, ax1 = plt.subplots()
@@ -1749,8 +1774,8 @@ class VHSRFDecode(ldd.RFDecode):
             #            ax2 = ax1.twinx()
             #            ax3 = ax1.twinx()
             if zmqio[0] is not None:
-                ax1.plot(out_video, color="#FF0000")
-                ax1.plot(int_video, color="#0000FF")
+                ax1.plot(out_video[:4096], color="#FF0000")
+                #ax1.plot(int_video[:4096], color="#0000FF")
             else:
                 ax1.plot(out_video, color="#FF0000")
             #            crossings = find_crossings(env, 700)
