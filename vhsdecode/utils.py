@@ -52,8 +52,8 @@ def pad_or_truncate(data, filler):
 
 
 def moving_average(data_list, window=1024):
-    average = np.mean(data_list)
-        # sum(data_list) / len(data_list)
+    #average = np.mean(data_list)
+    average = sum(data_list) / len(data_list)
 
     if len(data_list) >= window:
         data_list.pop()

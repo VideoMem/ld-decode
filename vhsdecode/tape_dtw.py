@@ -19,7 +19,8 @@ from math import pi
 class TimeWarper:
     # fdc chroma subcarrier frequency
     def __init__(self, fdc, fv=60, fs=40e6, blocklen=pow(2, 15)):
-        self.dx = 128
+        self.dx = 2
+        self.control_gain = -1/100000
         self.harmonic_limit = 3
         self.samp_rate = fs
         self.fdc = fdc
@@ -69,6 +70,7 @@ class TimeWarper:
         #self.last_velocity_offset.clear()
         #print('computed offset', offset)
         self.clear()
+        self.framebuffer = list()
         #exit(0)
 
     def clear(self):
@@ -119,7 +121,7 @@ class TimeWarper:
     # Measures the head switch jitter
     def head_switch_jitter(self, data):
 
-        narrowband = self.bandpass.work(data.real)
+        narrowband = self.bandpass.workl(data.real)
 
         freq = self.deFM(narrowband)
         centered = np.add(freq, -self.offset)
@@ -153,14 +155,22 @@ class TimeWarper:
     def block_resample(self, data, control, converter='linear'):
         data_chunks = np.split(data, self.dx)
         control_id = 0
-        #print(self.fdc)
+
         resampled = np.asarray([])
-        #plot_scope(control)
+        #fdcr = np.full(len(control), self.fdc)
+        ratio_plot = np.divide(
+            np.add(self.fdc, control * self.control_gain),
+            self.fdc
+        )
+        #plot_scope(ratio_plot)
         for chunk in data_chunks:
             #if control[control_id] > 0:
             #    adjust = self.fdc - control[control_id])
-            ratio = self.fdc - control[control_id] / self.fdc
-            ratio = np.clip(ratio, a_max=256, a_min=1/256).astype(np.float64)
+            ratio = ratio_plot[control_id] #(self.fdc - control[control_id]) / self.fdc
+            clip_ratio = np.clip(ratio, a_max=256, a_min=1/256).astype(np.float64)
+            if ratio != clip_ratio:
+                print('[!] WARN: clipped resampling ratio %.3f -> %.3f' % (ratio, clip_ratio))
+                ratio = clip_ratio
             bres = resample(chunk, ratio=ratio, converter_type=converter)
             resampled = np.append(resampled, bres)
             #print('Adjusting velocity point %d (df %.2f) by %.2f%%' % (control_id, control[control_id], adjust * 100))
@@ -178,10 +188,28 @@ class TimeWarper:
 
         return resampled
 
+    def out_or_zero(self):
+        flatten = []
+        for buffer in self.framebuffer:
+            flatten.extend(buffer)
+
+        if len(flatten) > self.blocklen:
+            head = flatten[:self.blocklen]
+            tail = flatten[self.blocklen:]
+            assert len(head) == self.blocklen
+            assert len(head) + len(tail) == len(flatten), 'expected %d got %d' % ( len(flatten), len(head) + len(tail) )
+            print('->> tape slip: ', len(tail))
+            self.framebuffer.clear()
+            self.framebuffer.append(tail)
+            return head
+        else:
+            return np.zeros(self.blocklen)
+
     def velocity_compensator(self, data):
         velocity, acceleration, average_velocity =\
             self.head_switch_jitter(data)
         control = self.get_control(np.add(velocity, average_velocity))
         resampled = self.block_resample(data, control)
-        resampled = pad_or_truncate(resampled, data)
-        return pad_or_truncate(resampled, data)
+        self.framebuffer.append(resampled)
+
+        return self.out_or_zero() # pad_or_truncate(resampled, data)

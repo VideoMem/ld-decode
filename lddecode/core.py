@@ -266,7 +266,7 @@ class RFDecode:
         self,
         inputfreq=40,
         system="NTSC",
-        blocklen=32 * 1024,
+        blocklen= 256 * 1024,
         decode_digital_audio=False,
         decode_analog_audio=0,
         has_analog_audio=True,

@@ -1215,13 +1215,17 @@ class VHSDecode(ldd.LDdecode):
         return None
 
     def build_json(self, f):
-        jout = super(VHSDecode, self).build_json(f)
-        black = jout["videoParameters"]["black16bIre"]
-        white = jout["videoParameters"]["white16bIre"]
+        try:
+            jout = super(VHSDecode, self).build_json(f)
+            black = jout["videoParameters"]["black16bIre"]
+            white = jout["videoParameters"]["white16bIre"]
 
-        jout["videoParameters"]["black16bIre"] = black * (1 - self.level_adjust)
-        jout["videoParameters"]["white16bIre"] = white * (1 + self.level_adjust)
-        return jout
+            jout["videoParameters"]["black16bIre"] = black * (1 - self.level_adjust)
+            jout["videoParameters"]["white16bIre"] = white * (1 + self.level_adjust)
+            return jout
+        except TypeError as e:
+            print('Cannot build json: %s' % e)
+            return None
 
 
 class VTRDemodCache(ldd.DemodCache):
@@ -1278,6 +1282,7 @@ class VTRDemodCache(ldd.DemodCache):
                     "demod" not in block
                     or np.abs(block["MTF"] - target_MTF) > self.MTF_tolerance
                 ):
+
                     output["demod"] = self.rf.demodblock(data=block["rawinput"],
                         fftdata=fftdata, mtf_level=target_MTF, cut=True,
                         zmqio=(self.zmq_out, self.zmq_in)
@@ -1528,10 +1533,10 @@ class VHSRFDecode(ldd.RFDecode):
         }
         self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
                                   self.SysParams["FPS"] * 2,
-                                  self.freq_hz)
+                                  self.freq_hz, blocklen=self.blocklen)
         self.cdtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
                                   self.SysParams["FPS"] * 2,
-                                  self.freq_hz)
+                                  self.freq_hz, blocklen=self.blocklen)
         #utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
         #utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
         self.zeroblock = np.zeros(pow(2,15))
@@ -1586,6 +1591,9 @@ class VHSRFDecode(ldd.RFDecode):
         demod = unwrap_hilbert(rf_filtered, self.freq_hz)
         demod_fft = np.fft.fft(demod)
         out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
+        #self.min_demod.append(min(out_video))
+        #out_video -= utils.moving_average(self.min_demod, window=self.SysParams["frame_lines"])
+        #out_video = np.add(out_video, self.iretohz(self.SysParams["vsync_ire"]))
 
         return demod, demod_fft, out_video
 
@@ -1645,7 +1653,7 @@ class VHSRFDecode(ldd.RFDecode):
         demod_fft = np.fft.fft(demod)
         out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
         #out_video = self.YNR(out_video)
-        out_video = self.luma_limit.work(out_video)
+        #out_video = self.luma_limit.work(out_video)
         #assert len(out_video) == out_samples
         return demod, demod_fft, out_video
 
@@ -1700,27 +1708,26 @@ class VHSRFDecode(ldd.RFDecode):
 
     def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=True):
         rv = {}
-        #rdata, stats = self.dtw.velocity_compensator(data)
-        #data = utils.pad_or_truncate(rdata, data)
-        #fftdata = np.fft.fft(data[: self.blocklen])
 
-        resampled = self.cdtw.velocity_compensator(data)
-        hsj = self.dtw.head_switch_jitter(resampled)
-        zmqio[0].send_complex(
-            hsj[0] + 1j * hsj[1]
-        )
-        data = resampled
-        indata_fft = np.fft.fft(data[: self.blocklen])
+        velocity_compensate = True
 
-        #if fftdata is not None:
-        #    indata_fft = fftdata
-        #elif data is not None:
-        #    indata_fft = np.fft.fft(data[: self.blocklen])
-        #else:
-        #    raise Exception("demodblock called without raw or FFT data")
-
-        #if data is None:
-        #    data = np.fft.ifft(indata_fft).real
+        if velocity_compensate:
+            resampled = self.cdtw.velocity_compensator(data)
+            #hsj = self.dtw.head_switch_jitter(resampled)
+            #zmqio[0].send_complex(
+            #    hsj[0] + 1j * hsj[1]
+            #)
+            data = resampled
+            indata_fft = np.fft.fft(data[: self.blocklen])
+        else:
+            if fftdata is not None:
+                indata_fft = fftdata
+            elif data is not None:
+                indata_fft = np.fft.fft(data[: self.blocklen])
+            else:
+                raise Exception("demodblock called without raw or FFT data")
+            if data is None:
+                data = np.fft.ifft(indata_fft).real
 
         # switches between internal demodulator and the external one
         if zmqio[0] is None:
@@ -1728,10 +1735,12 @@ class VHSRFDecode(ldd.RFDecode):
         else:
             #indata_fft_filt = indata_fft * self.Filters["RFVideo"]
             #rf_filtered = np.fft.ifft(indata_fft_filt)
-            #demod, demod_fft, int_video = self.external_demod(zmqio, rf_filtered)
+            #demod, demod_fft, int_video = self.external_demod(zmqio, data)
             if amp_comp:
-                _, _, int_video = self.hilbert_demod(data)
-                demod, demod_fft, out_video = self.hilbert_huang_demod(data)
+                _, _, out_video = self.hilbert_demod(data)
+                demod, demod_fft, int_video = self.hilbert_huang_demod(data)
+                #if velocity_compensate:
+                #    out_video = np.add(out_video, -250e3)
                 # assert not np.isnan(out_video).any() and not np.isnan(out_chroma).any(), 'Got NAN at demodblock()'
                 # assert len(out_video) == len(self.zeroblock)
                 # print('After max:', min(out_video), max(out_video))
@@ -1757,9 +1766,9 @@ class VHSRFDecode(ldd.RFDecode):
         # Calculate an evelope with signal strength using absolute of hilbert transform.
         env = np.abs(hilbt(raw_filtered))
 
-        assert len(out_video) == pow(2, 15), 'Unexpected uneven block'
+        assert len(out_video) == self.blocklen, 'Unexpected uneven block'
 
-        if True:
+        if False:
             import matplotlib.pyplot as plt
 
             fig, ax1 = plt.subplots()
@@ -1774,8 +1783,8 @@ class VHSRFDecode(ldd.RFDecode):
             #            ax2 = ax1.twinx()
             #            ax3 = ax1.twinx()
             if zmqio[0] is not None:
-                ax1.plot(out_video[:4096], color="#FF0000")
-                #ax1.plot(int_video[:4096], color="#0000FF")
+                ax1.plot(out_video[:8192], color="#FF0000")
+                #ax1.plot(int_video[:8192], color="#0000FF")
             else:
                 ax1.plot(out_video, color="#FF0000")
             #            crossings = find_crossings(env, 700)
