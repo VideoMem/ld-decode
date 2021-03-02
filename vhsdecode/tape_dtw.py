@@ -19,7 +19,7 @@ from math import pi
 class TimeWarper:
     # fdc chroma subcarrier frequency
     def __init__(self, fdc, fv=60, fs=40e6, blocklen=pow(2, 15)):
-        self.dx = 2
+        self.dx = 8
         self.control_gain = -1/100000
         self.harmonic_limit = 3
         self.samp_rate = fs
@@ -29,6 +29,7 @@ class TimeWarper:
         self.fdc_lut, first, last = auto_chop(gen_wave_at_frequency(fdc - 10e3, fs, blocklen))
         self.fdc_wave = gen_wave_at_frequency(fdc, fs, blocklen)
         self.roll = blocklen - last
+        self.blockids = list()
 
         #instf, t = inst_freq(self.fdc_wave)
         #self.offset = np.mean(np.multiply(instf, self.samp_rate))
@@ -201,15 +202,15 @@ class TimeWarper:
             print('->> tape slip: ', len(tail))
             self.framebuffer.clear()
             self.framebuffer.append(tail)
-            return head
+            return head, True
         else:
-            return np.zeros(self.blocklen)
+            return np.zeros(self.blocklen), False
 
-    def velocity_compensator(self, data):
+    def velocity_compensator(self, data, blockid=0):
+        #self.blockids.append(blockid)
         velocity, acceleration, average_velocity =\
             self.head_switch_jitter(data)
         control = self.get_control(np.add(velocity, average_velocity))
         resampled = self.block_resample(data, control)
         self.framebuffer.append(resampled)
-
-        return self.out_or_zero() # pad_or_truncate(resampled, data)
+        return self.out_or_zero()

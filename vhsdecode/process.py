@@ -15,11 +15,13 @@ import vhsdecode.formats as vhs_formats
 
 import zmq
 import vhsdecode.addons.zmq_grc as zm
+from vhsdecode.addons.FMdeemph import FMDeEmphasis
 from collections import deque
 from fractions import Fraction
 from samplerate import resample
 from pyhht.utils import inst_freq
 from pyhht import EmpiricalModeDecomposition as EMD
+
 
 try:
     import pyfftw.interfaces.numpy_fft as npfft
@@ -1250,6 +1252,8 @@ class VTRDemodCache(ldd.DemodCache):
         self.zmq_in = None
 
     def worker(self, pipein):
+        velocity_compensation = True
+
         try:
             self.zmq_out = zm.ZMQSend()
             self.zmq_in = zm.ZMQReceive(port=5566)
@@ -1257,7 +1261,10 @@ class VTRDemodCache(ldd.DemodCache):
             print('Cannot initialize zmq_worker %s' % e)
 
         while True:
+            blocknum, block, output = 0, None, {}
+            idoffset = 0
             ispiped = False
+
             if pipein.poll():
                 item = pipein.recv()
                 ispiped = True
@@ -1270,29 +1277,42 @@ class VTRDemodCache(ldd.DemodCache):
             if item[0] == "DEMOD":
                 blocknum, block, target_MTF = item[1:]
 
-                output = {}
-
-                if "fft" not in block:
-                    output["fft"] = npfft.fft(block["rawinput"])
-                    fftdata = output["fft"]
-                else:
-                    fftdata = block["fft"]
-
                 if (
                     "demod" not in block
                     or np.abs(block["MTF"] - target_MTF) > self.MTF_tolerance
                 ):
+                    #if "fft" not in block:
+                    #    output["fft"] = npfft.fft(block["rawinput"])
+                    #    fftdata = output["fft"]
+                    #else:
+                    #    fftdata = block["fft"]
 
-                    output["demod"] = self.rf.demodblock(data=block["rawinput"],
-                        fftdata=fftdata, mtf_level=target_MTF, cut=True,
-                        zmqio=(self.zmq_out, self.zmq_in)
-                    )
-                    output["MTF"] = target_MTF
+                    if velocity_compensation:
+                        resampled, state = self.rf.cdtw.velocity_compensator(block["rawinput"])
+                    else:
+                        resampled, state = block["rawinput"], True
 
-                self.q_out.put((blocknum, output))
+                    if state:
+                        blocknum += idoffset
+                        indata_fft = np.fft.fft(resampled[: self.rf.blocklen])
+
+                        output["demod"] = self.rf.demodblock(data=resampled,
+                            fftdata=indata_fft, mtf_level=target_MTF, cut=True,
+                            zmqio=(self.zmq_out, self.zmq_in)
+                        )
+                        output["MTF"] = target_MTF
+
+                    else:
+                        idoffset += 1
+                        output["demod"] = {}
+                        print('missed frame')
+
+
             elif item[0] == "NEWPARAMS":
+                print('elfig')
                 self.apply_newparams(item[1])
 
+            self.q_out.put((blocknum, output))
             if not ispiped:
                 self.q_in.task_done()
 
@@ -1434,8 +1454,12 @@ class VHSRFDecode(ldd.RFDecode):
         da, db = gen_high_shelf(
             DP["deemph_corner"] / 1.0e6, DP["deemph_gain"], 1 / 2, inputfreq
         )
+        utils.filter_plot(db, da, self.freq_hz, 'Lowpass', 'Current VHS Deemphasis')
+        #deemphasis = FMDeEmphasis(self.freq_hz, tau=1.25e-6)
+        db, da = FMDeEmphasis(self.freq_hz, tau=1.25e-6).get()
+        utils.filter_plot(db, da, self.freq_hz, 'Lowpass', '1.25µs Deemphasis')
         w, h = sps.freqz(db, da)
-
+        exit(0)
         self.Filters["Fdeemp"] = lddu.filtfft((db, da), self.blocklen)
         self.Filters["FVideo"] = self.Filters["Fvideo_lpf"] * self.Filters["Fdeemp"]
         SF = self.Filters
@@ -1709,25 +1733,15 @@ class VHSRFDecode(ldd.RFDecode):
     def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=True):
         rv = {}
 
-        velocity_compensate = True
-
-        if velocity_compensate:
-            resampled = self.cdtw.velocity_compensator(data)
-            #hsj = self.dtw.head_switch_jitter(resampled)
-            #zmqio[0].send_complex(
-            #    hsj[0] + 1j * hsj[1]
-            #)
-            data = resampled
+        if fftdata is not None:
+            indata_fft = fftdata
+        elif data is not None:
             indata_fft = np.fft.fft(data[: self.blocklen])
         else:
-            if fftdata is not None:
-                indata_fft = fftdata
-            elif data is not None:
-                indata_fft = np.fft.fft(data[: self.blocklen])
-            else:
-                raise Exception("demodblock called without raw or FFT data")
-            if data is None:
-                data = np.fft.ifft(indata_fft).real
+            raise Exception("demodblock called without raw or FFT data")
+
+        if data is None:
+            data = np.fft.ifft(indata_fft).real
 
         # switches between internal demodulator and the external one
         if zmqio[0] is None:
