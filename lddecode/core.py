@@ -266,7 +266,7 @@ class RFDecode:
         self,
         inputfreq=40,
         system="NTSC",
-        blocklen= 256 * 1024,
+        blocklen=32 * 1024,
         decode_digital_audio=False,
         decode_analog_audio=0,
         has_analog_audio=True,
@@ -1252,29 +1252,27 @@ class DemodCache:
             if "MTF" not in item or "demod" not in item:
                 # This shouldn't happen, but was observed by Simon on a decode
                 logger.error(
-                    "incomplete demodulated block placed on queue, block #%d" % blocknum
+                    "incomplete demodulated block placed on queue, block #%d", blocknum
                 )
-                try:
-                    self.q_in.put((blocknum, self.blocks[blocknum], self.currentMTF))
-                    self.lock.release()
-                except KeyError as e:
-                    logger.error('KeyError: %s' % e)
-            else:
-                self.q_in_metadata.remove((blocknum, item["MTF"]))
-
-                for k in item.keys():
-                    if k == "demod" and (
-                        np.abs(item["MTF"] - self.currentMTF) > self.MTF_tolerance
-                    ):
-                        continue
-                    self.blocks[blocknum][k] = item[k]
-
-                if "input" not in self.blocks[blocknum]:
-                    self.blocks[blocknum]["input"] = self.blocks[blocknum]["rawinput"][
-                        self.rf.blockcut : -self.rf.blockcut_end
-                    ]
-
+                self.q_in.put((blocknum, self.blocks[blocknum], self.currentMTF))
                 self.lock.release()
+                continue
+
+            self.q_in_metadata.remove((blocknum, item["MTF"]))
+
+            for k in item.keys():
+                if k == "demod" and (
+                    np.abs(item["MTF"] - self.currentMTF) > self.MTF_tolerance
+                ):
+                    continue
+                self.blocks[blocknum][k] = item[k]
+
+            if "input" not in self.blocks[blocknum]:
+                self.blocks[blocknum]["input"] = self.blocks[blocknum]["rawinput"][
+                    self.rf.blockcut : -self.rf.blockcut_end
+                ]
+
+            self.lock.release()
 
     def read(self, begin, length, MTF=0, dodemod=True):
         # transpose the cache by key, not block #

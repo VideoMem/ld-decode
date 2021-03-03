@@ -2,6 +2,7 @@ import numpy as np
 import scipy.signal as signal
 import matplotlib.pyplot as plt
 
+
 def gen_wave_at_frequency(frequency, sample_frequency, num_samples, gen_func=np.sin):
     """Generate a sine wave with the specified parameters."""
     samples = np.arange(num_samples)

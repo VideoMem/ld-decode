@@ -1114,6 +1114,7 @@ class VHSDecode(ldd.LDdecode):
         dod_hysteresis=vhs_formats.DEFAULT_HYSTERESIS,
         track_phase=0,
         level_adjust=0.2,
+        extra_options={},
     ):
         super(VHSDecode, self).__init__(
             fname_in,
@@ -1124,6 +1125,7 @@ class VHSDecode(ldd.LDdecode):
             system=system,
             doDOD=doDOD,
             threads=threads,
+            extra_options=extra_options,
         )
         # Adjustment for output to avoid clipping.
         self.level_adjust = level_adjust
@@ -1252,7 +1254,7 @@ class VTRDemodCache(ldd.DemodCache):
         self.zmq_in = None
 
     def worker(self, pipein):
-        velocity_compensation = True
+        velocity_compensation = False
 
         try:
             self.zmq_out = zm.ZMQSend()
@@ -1448,18 +1450,12 @@ class VHSRFDecode(ldd.RFDecode):
             )
 
         # Video (luma) de-emphasis
-        # Not sure about the math of this but, by using a high-shelf filter and then
-        # swapping b and a we get a low-shelf filter that goes from 0 to -14 dB rather
-        # than from 14 to 0 which the high shelf function gives.
-        da, db = gen_high_shelf(
-            DP["deemph_corner"] / 1.0e6, DP["deemph_gain"], 1 / 2, inputfreq
+        db, da = FMDeEmphasis(self.freq_hz, tau=DP["deemph_tau"]).get()
+
+        self.Filters["FEnvPost"] = sps.butter(
+            1, [1000000 / self.freq_hz_half], btype="lowpass"
         )
-        utils.filter_plot(db, da, self.freq_hz, 'Lowpass', 'Current VHS Deemphasis')
-        #deemphasis = FMDeEmphasis(self.freq_hz, tau=1.25e-6)
-        db, da = FMDeEmphasis(self.freq_hz, tau=1.25e-6).get()
-        utils.filter_plot(db, da, self.freq_hz, 'Lowpass', '1.25µs Deemphasis')
-        w, h = sps.freqz(db, da)
-        exit(0)
+
         self.Filters["Fdeemp"] = lddu.filtfft((db, da), self.blocklen)
         self.Filters["FVideo"] = self.Filters["Fvideo_lpf"] * self.Filters["Fdeemp"]
         SF = self.Filters
@@ -1479,6 +1475,7 @@ class VHSRFDecode(ldd.RFDecode):
         fsc_mhz = self.SysParams["fsc_mhz"]
         out_sample_rate_mhz = fsc_mhz * 4
         out_frequency_half = out_sample_rate_mhz / 2
+        het_freq = fsc_mhz + cc
         fieldlen = self.SysParams["outlinelen"] * max(self.SysParams["field_lines"])
 
         # Final band-pass filter for chroma output.
@@ -1495,17 +1492,30 @@ class VHSRFDecode(ldd.RFDecode):
         )
         self.Filters["FChromaFinal"] = chroma_bandpass_final
 
-        chroma_burst_check = sps.butter(
-            2,
+        # Bandpass filter to select heterodyne frequency from the mixed fsc and color carrier signal
+        het_filter = sps.butter(
+            1,
             [
-                (fsc_mhz - 0.14) / out_frequency_half,
-                (fsc_mhz + 0.04) / out_frequency_half,
+                (het_freq - 0.001) / out_frequency_half,
+                (het_freq + 0.001) / out_frequency_half,
             ],
             btype="bandpass",
         )
-        self.Filters["FChromaBurstCheck"] = chroma_burst_check
-
         samples = np.arange(fieldlen)
+
+        # As this is done on the tbced signal, we need the sampling frequency of that,
+        # which is 4fsc for NTSC and approx. 4 fsc for PAL.
+        # TODO: Correct frequency for pal?
+        cc_wave_scale = cc / out_sample_rate_mhz
+        self.cc_ratio = cc_wave_scale
+        # 0 phase downconverted color under carrier wave
+        self.cc_wave = np.sin(2 * np.pi * cc_wave_scale * samples)
+        # +90 deg and so on phase wave for track2 phase rotation
+        cc_wave_90 = np.sin((2 * np.pi * cc_wave_scale * samples) + (np.pi / 2))  #
+        cc_wave_180 = np.sin((2 * np.pi * cc_wave_scale * samples) + np.pi)
+        cc_wave_270 = np.sin(
+            (2 * np.pi * cc_wave_scale * samples) + np.pi + (np.pi / 2)
+        )
 
         # Standard frequency color carrier wave.
         self.fsc_wave = utils.gen_wave_at_frequency(
@@ -1519,26 +1529,21 @@ class VHSRFDecode(ldd.RFDecode):
         # We combine the color carrier with a wave with a frequency of the
         # subcarrier + the downconverted chroma carrier to get the original
         # color wave back.
-        het_freq = fsc_mhz + cc
-        cc_wave_scale = het_freq / out_sample_rate_mhz
-        self.cc_ratio = cc_wave_scale
-        # 0 phase downconverted color under carrier wave
-        self.cc_wave = np.sin(2 * np.pi * cc_wave_scale * samples)
+        self.chroma_heterodyne = {}
 
-        Fc_half_pi = round(out_sample_rate_mhz / (4 * cc))
-        carrier = deque(self.cc_wave)
-        carrier.rotate(Fc_half_pi)
-        phase_90 = np.asarray(carrier)
-        carrier.rotate(Fc_half_pi)
-        phase_180 = np.asarray(carrier)
-        carrier.rotate(Fc_half_pi)
-        phase_270 = np.asarray(carrier)
-        self.chroma_heterodyne = {
-            0: self.cc_wave,
-            1: phase_90,
-            2: phase_180,
-            3: phase_270
-        }
+        self.chroma_heterodyne[0] = sps.filtfilt(
+            het_filter[0], het_filter[1], self.cc_wave * self.fsc_wave
+        )
+        self.chroma_heterodyne[1] = sps.filtfilt(
+            het_filter[0], het_filter[1], cc_wave_90 * self.fsc_wave
+        )
+        self.chroma_heterodyne[2] = sps.filtfilt(
+            het_filter[0], het_filter[1], cc_wave_180 * self.fsc_wave
+        )
+        self.chroma_heterodyne[3] = sps.filtfilt(
+            het_filter[0], het_filter[1], cc_wave_270 * self.fsc_wave
+        )
+
         self.int_amplitude = list()
         self.ext_amplitude = list()
         self.int_min = list()
@@ -1547,8 +1552,8 @@ class VHSRFDecode(ldd.RFDecode):
         yiir_b, yiir_a = utils.firdes_lowpass(self.freq_hz, 2.7e6, 800e3, order_limit=20)
         fmhipass = utils.firdes_highpass(self.freq_hz, 2.4e6, 500e3, order_limit=20)
         fmlopass = utils.firdes_lowpass(self.freq_hz, 6.4e6, 3e6, order_limit=20)
-        #fmhipass = utils.firdes_highpass(self.freq_hz, 3490000, 500e3, order_limit=1)
-        #fmlopass = utils.firdes_lowpass(self.freq_hz, 5580000, 3e6, order_limit=1)
+        # fmhipass = utils.firdes_highpass(self.freq_hz, 3490000, 500e3, order_limit=1)
+        # fmlopass = utils.firdes_lowpass(self.freq_hz, 5580000, 3e6, order_limit=1)
 
         self.luma_limit = utils.FiltersClass(yiir_b, yiir_a, self.freq_hz)
         self.YFM_filter = {
@@ -1559,12 +1564,13 @@ class VHSRFDecode(ldd.RFDecode):
                                   self.SysParams["FPS"] * 2,
                                   self.freq_hz, blocklen=self.blocklen)
         self.cdtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
-                                  self.SysParams["FPS"] * 2,
-                                  self.freq_hz, blocklen=self.blocklen)
-        #utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
-        #utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
-        self.zeroblock = np.zeros(pow(2,15))
+                                   self.SysParams["FPS"] * 2,
+                                   self.freq_hz, blocklen=self.blocklen)
+        # utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
+        # utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
+        self.zeroblock = np.zeros(pow(2, 15))
         print('Set samplerate at: %d Hz' % self.freq_hz)
+
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
