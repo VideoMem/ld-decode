@@ -3,7 +3,6 @@
     Copyright 2005,2007,2021 Free Software Foundation, Inc.
     SPDX-License-Identifier: GPL-3.0-or-later
 """
-
 import math
 
 
