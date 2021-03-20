@@ -13,17 +13,17 @@ from vhsdecode.utils import \
 from lddecode.utils import unwrap_hilbert
 from samplerate import resample
 import dtw
-
+import os
 
 def cost(data):
     a = np.max(data) - np.min(data)
     b = np.mean(data)
-    return pow(b, 2) / 5
+    return pow(b, 2)
 
 
 def edge_pad(data, edge_len):
-    head = np.linspace(0.0, data[0], edge_len, dtype=data.dtype)
-    tail = np.linspace(data[len(data)-1], 0.0, edge_len, dtype=data.dtype)
+    head = np.linspace(data[0], data[0], edge_len, dtype=data.dtype)
+    tail = np.linspace(data[len(data)-1], data[len(data)-1] , edge_len, dtype=data.dtype)
     result = np.concatenate((head, data, tail))
     assert len(result) == len(head) + len(data) + len(tail)
     return result
@@ -36,7 +36,8 @@ class TimeWarper:
     # fdc chroma subcarrier frequency
     def __init__(self, fdc, fv=60, fs=40e6, blocklen=pow(2, 15)):
         self.plots = True
-        self.chunks = 4
+        self.pid = os.getpid()
+        self.chunks = 32
         self.error = 0.1
         self.drift = 0
         self.sign = 1
@@ -93,6 +94,7 @@ class TimeWarper:
             np.append(acceleration, acceleration[len(acceleration)-1]),
 
     def do(self, data):
+        plots = False
         narrowband = self.edgeless_filt(data)
         amplitude = np.mean(np.abs(narrowband)) * 2
         zeroes = zero_cross_det(narrowband)
@@ -115,38 +117,19 @@ class TimeWarper:
             template = wave_chunks[id]
             alignment = dtw.dtw(query, template, keep_internals=True)
             wq = dtw.warp(alignment, index_reference=False)
-            plot_scope(wq)
-            #alignment.plot('threeway')
-            dualplot_scope(query[:128], query[wq][:128])
+            if plots:
+                #plot_scope(wq)
+                alignment.plot('threeway')
+                dualplot_scope(template[:128], query[wq][:128])
             result.append(chunk[wq])
 
         flatten_warp = np.array(self.list_flatten(result))
-        dualplot_scope(data[:128], flatten_warp[:128])
+        if plots:
+            dualplot_scope(data[:128], flatten_warp[:128])
         return flatten_warp
 
-    def loss_choose(self, losses):
-        half = int(len(losses) / 2)
-        hi_loss = losses[:half]
-        lo_loss = np.flip(losses[half:])
-        hi_diff = np.diff(hi_loss)
-        lo_diff = np.diff(lo_loss)
-        if hi_diff[0] < lo_diff[0]:
-            comp_diff = hi_diff
-            sign = self.sign
-        else:
-            comp_diff = lo_diff
-            sign = self.sign * -1
-
-        sub_id = 0
-        id_limit = len(comp_diff) - 2
-        while comp_diff[sub_id+1] < comp_diff[sub_id] and sub_id < id_limit:
-            sub_id += 1
-
-        id = half + (sign * sub_id) - self.drift
-        return np.clip(id, a_min=0, a_max=len(losses) - 1)
-
     def loss_map(self, data):
-        return None, self.do(data)
+        #data = self.do(data)
         data_chunks = np.split(data, self.chunks)
         dtwspace = np.linspace(self.dev[0], self.dev[1], self.drc)
         rows, columns = self.drc, len(data_chunks)
@@ -188,11 +171,11 @@ class TimeWarper:
         #print(len(data), len(warp_flat))
         self.min_dev.append(100 * np.min(ratios))
         self.max_dev.append(100 * np.max(ratios))
-        print('DTW avg speed slip - min: %.4f max: %.4f %%' % (moving_average(self.min_dev, 1024), moving_average(self.max_dev, 1024)))
+        print('DTW pid %d avg speed slip - min: %.4f max: %.4f %%' % (self.pid, moving_average(self.min_dev, 1024), moving_average(self.max_dev, 1024)))
         if self.plots:
             vel0, acc0 = self.head_switch_jitter(data)
             velw, accw = self.head_switch_jitter(np.array(warp))
-            dualplot_scope(np.cumsum(vel0), np.cumsum(velw))
+            dualplot_scope(np.cumsum(acc0), np.cumsum(accw))
             plot_image(image)
             plot_scope(ratios)
         return image, warp
@@ -227,3 +210,23 @@ class TimeWarper:
         self.blockid += 1
         return self.out_or_zero()
 
+    def loss_choose(self, losses):
+        half = int(len(losses) / 2)
+        hi_loss = losses[:half]
+        lo_loss = np.flip(losses[half:])
+        hi_diff = np.diff(hi_loss)
+        lo_diff = np.diff(lo_loss)
+        if hi_diff[0] < lo_diff[0]:
+            comp_diff = hi_diff
+            sign = self.sign
+        else:
+            comp_diff = lo_diff
+            sign = self.sign * -1
+
+        sub_id = 0
+        id_limit = len(comp_diff) - 2
+        while comp_diff[sub_id+1] < comp_diff[sub_id] and sub_id < id_limit:
+            sub_id += 1
+
+        id = half + (sign * sub_id) - self.drift
+        return np.clip(id, a_min=0, a_max=len(losses) - 1)
