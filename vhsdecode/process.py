@@ -7,11 +7,14 @@ import itertools
 
 import lddecode.core as ldd
 import lddecode.utils as lddu
+from lddecode.utils import unwrap_hilbert, inrange
 import vhsdecode.utils as utils
 import vhsdecode.tape_dtw as dtw
 from lddecode.utils import unwrap_hilbert
 
 import vhsdecode.formats as vhs_formats
+from vhsdecode.addons.FMdeemph import FMDeEmphasisB
+from vhsdecode.addons.chromasep import ChromaSepClass
 
 import zmq
 import vhsdecode.addons.zmq_grc as zm
@@ -22,7 +25,7 @@ from samplerate import resample
 from pyhht.utils import inst_freq
 from pyhht import EmpiricalModeDecomposition as EMD
 
-
+# Use PyFFTW's faster FFT implementation if available
 try:
     import pyfftw.interfaces.numpy_fft as npfft
     import pyfftw.interfaces
@@ -31,14 +34,6 @@ try:
     pyfftw.interfaces.cache.set_keepalive_time(10)
 except ImportError:
     import numpy.fft as npfft
-
-
-def toDB(val):
-    return 20 * np.log10(val)
-
-
-def fromDB(val):
-    return 10.0 ** (val / 20.0)
 
 
 def chroma_to_u16(chroma):
@@ -50,6 +45,7 @@ def chroma_to_u16(chroma):
     return np.uint16(chroma + S16_ABS_MAX)
 
 
+@njit
 def acc(chroma, burst_abs_ref, burststart, burstend, linelength, lines):
     """Scale chroma according to the level of the color burst on each line."""
 
@@ -63,6 +59,7 @@ def acc(chroma, burst_abs_ref, burststart, burstend, linelength, lines):
     return output
 
 
+@njit
 def acc_line(chroma, burst_abs_ref, burststart, burstend):
     """Scale chroma according to the level of the color burst the line."""
     output = np.zeros(chroma.size, dtype=np.double)
@@ -158,23 +155,31 @@ def getpulses_override(field):
 
 
 def filter_simple(data, filter_coeffs):
-    #    fb, fa = filter_coeffs
     return sps.sosfiltfilt(filter_coeffs, data, padlen=150)
 
 
-# def comb_c_pal(data, linelen):
-#     """Very basic comb filter, adds the signal together with a signal delayed by 2H,
-#     line by line. VCRs do this to reduce crosstalk.
-#     """
+@njit
+def comb_c_pal(data, line_len):
+    """Very basic comb filter, adds the signal together with a signal delayed by 2H,
+    and one advanced by 2H
+    line by line. VCRs do this to reduce crosstalk.
+    """
 
-#     data2 = data.copy()
-#     numlines = len(data) // linelen
-#     for l in range(16,numlines - 2):
-#         delayed2h = data[(l - 2) * linelen:(l - 1) * linelen]
-#         data[l * linelen:(l + 1) * linelen] += (delayed2h / 2)
-#     return data
+    data2 = data.copy()
+    numlines = len(data) // line_len
+    for line_num in range(16, numlines - 2):
+        adv2h = data2[(line_num + 2) * line_len : (line_num + 3) * line_len]
+        delayed2h = data2[(line_num - 2) * line_len : (line_num - 1) * line_len]
+        line_slice = data[line_num * line_len : (line_num + 1) * line_len]
+        # Let the delayed signal contribute 1/4 and advanced 1/4.
+        # Could probably make the filtering configurable later.
+        data[line_num * line_len : (line_num + 1) * line_len] = (
+            (line_slice) - (delayed2h) - adv2h
+        ) / 3
+    return data
 
 
+@njit
 def comb_c_ntsc(data, line_len):
     """Very basic comb filter, adds the signal together with a signal delayed by 1H,
     line by line. VCRs do this to reduce crosstalk.
@@ -193,6 +198,7 @@ def comb_c_ntsc(data, line_len):
     return data
 
 
+@njit
 def upconvert_chroma(
     chroma,
     lineoffset,
@@ -202,7 +208,7 @@ def upconvert_chroma(
     phase_rotation,
     starting_phase,
 ):
-    uphet = np.zeros(chroma.size, dtype=np.double)
+    uphet = np.zeros(len(chroma), dtype=np.double)
     if phase_rotation == 0:
         # Track 1 - for PAL, phase doesn't change.
         start = lineoffset
@@ -236,6 +242,7 @@ def upconvert_chroma(
     return uphet
 
 
+@njit
 def burst_deemphasis(chroma, lineoffset, linesout, outwidth, burstarea):
     for line in range(lineoffset, linesout + lineoffset):
         linestart = (line - lineoffset) * outwidth
@@ -302,6 +309,8 @@ def process_chroma(field, track_phase, disable_deemph=False):
     # Basic comb filter for NTSC to calm the color a little.
     if field.rf.system == "NTSC":
         uphet = comb_c_ntsc(uphet, outwidth)
+    #    else:
+    #        uphet = comb_c_pal(uphet, outwidth)
 
     # Final automatic chroma gain.
     uphet = acc(
@@ -366,6 +375,7 @@ def get_burst_area(field):
     )
 
 
+@njit
 def get_line(data, line_length, line):
     return data[line * line_length : (line + 1) * line_length]
 
@@ -524,6 +534,7 @@ def detect_burst_pal_line(
     return line
 
 
+@njit
 def detect_burst_ntsc(
     chroma_data, sine_wave, cosine_wave, burst_area, line_length, lines
 ):
@@ -551,6 +562,7 @@ def detect_burst_ntsc(
     return even_i_acc / num_lines, odd_i_acc / num_lines
 
 
+@njit
 def detect_burst_ntsc_line(
     chroma_data, sine, cosine, burst_area, line_length, line_number
 ):
@@ -922,6 +934,55 @@ class FieldPALVHS(ldd.FieldPAL):
         return detect_dropouts_rf(self)
 
 
+class FieldPALUMatic(ldd.FieldPAL):
+    def __init__(self, *args, **kwargs):
+        super(FieldPALUMatic, self).__init__(*args, **kwargs)
+
+    def refine_linelocs_pilot(self, linelocs=None):
+        """Override this as regular-band u-matic does not have a pilot burst."""
+        if linelocs is None:
+            linelocs = self.linelocs2.copy()
+        else:
+            linelocs = linelocs.copy()
+
+        return linelocs
+
+    def downscale(self, final=False, *args, **kwargs):
+        dsout, dsaudio, dsefm = super(FieldPALUMatic, self).downscale(
+            final, *args, **kwargs
+        )
+        dschroma = decode_chroma_umatic(self)
+
+        return (dsout, dschroma), dsaudio, dsefm
+
+    def calc_burstmedian(self):
+        # Set this to a constant value for now to avoid the comb filter messing with chroma levels.
+        return 1.0
+
+    def determine_field_number(self):
+        """Workaround to shut down phase id mismatch warnings, the actual code
+        doesn't work properly with the vhs output at the moment."""
+        return 1 + (self.rf.field_number % 8)
+
+    def getpulses(self):
+        """Find sync pulses in the demodulated video sigal
+
+        NOTE: TEMPORARY override until an override for the value itself is added upstream.
+        """
+        return getpulses_override(self)
+
+    def compute_deriv_error(self, linelocs, baserr):
+        """Disabled this for now as tapes have large variations in line pos
+        Due to e.g head switch.
+        compute errors based off the second derivative - if it exceeds 1 something's wrong,
+        and if 4 really wrong...
+        """
+        return baserr
+
+    def dropout_detect(self):
+        return detect_dropouts_rf(self)
+
+
 class FieldNTSCVHS(ldd.FieldNTSC):
     def __init__(self, *args, **kwargs):
         super(FieldNTSCVHS, self).__init__(*args, **kwargs)
@@ -1071,11 +1132,8 @@ class VHSDecode(ldd.LDdecode):
         doDOD=True,
         threads=1,
         inputfreq=40,
-        dod_threshold_p=vhs_formats.DEFAULT_THRESHOLD_P_DDD,
-        dod_threshold_a=None,
-        dod_hysteresis=vhs_formats.DEFAULT_HYSTERESIS,
-        track_phase=0,
         level_adjust=0.2,
+        rf_options={},
         extra_options={},
     ):
         super(VHSDecode, self).__init__(
@@ -1096,16 +1154,16 @@ class VHSDecode(ldd.LDdecode):
             system=system,
             tape_format=tape_format,
             inputfreq=inputfreq,
-            track_phase=track_phase,
-            dod_threshold_p=dod_threshold_p,
-            dod_threshold_a=dod_threshold_a,
-            dod_hysteresis=dod_hysteresis,
+            rf_options=rf_options,
         )
         # Store reference to ourself in the rf decoder - needed to access data location for track
         # phase, may want to do this in a better way later.
         self.rf.decoder = self
         if system == "PAL":
-            self.FieldClass = FieldPALVHS
+            if tape_format == "UMATIC":
+                self.FieldClass = FieldPALUMatic
+            else:
+                self.FieldClass = FieldPALVHS
         elif system == "NTSC":
             if tape_format == "UMATIC":
                 self.FieldClass = FieldNTSCUMatic
@@ -1115,7 +1173,11 @@ class VHSDecode(ldd.LDdecode):
             raise Exception("Unknown video system!", system)
 
         self.demodcache = VTRDemodCache(
-            self.rf, self.infile, self.freader, num_worker_threads=self.numthreads
+            self.rf,
+            self.infile,
+            self.freader,
+            num_worker_threads=self.numthreads,
+            cvbs_decode=extra_options["cvbs"],
         )
 
         if fname_out is not None:
@@ -1190,45 +1252,39 @@ class VHSDecode(ldd.LDdecode):
             jout["videoParameters"]["white16bIre"] = white * (1 + self.level_adjust)
             return jout
         except TypeError as e:
-            print('Cannot build json: %s' % e)
+            print("Cannot build json: %s" % e)
             return None
 
 
 class VTRDemodCache(ldd.DemodCache):
-    def __init__(self,
-                 rf,
-                 infile,
-                 loader,
-                 cachesize=256,
-                 num_worker_threads=1,
-                 MTF_tolerance=0.05):
+    def __init__(
+        self,
+        rf,
+        infile,
+        loader,
+        cachesize=256,
+        num_worker_threads=1,
+        MTF_tolerance=0.05,
+        cvbs_decode=False,
+    ):
+
+        self.cvbs_decode = cvbs_decode
 
         super(VTRDemodCache, self).__init__(
             rf,
             infile,
             loader,
             cachesize,
-            -1,
-            MTF_tolerance
+            -1 if cvbs_decode else num_worker_threads,
+            MTF_tolerance,
         )
         self.is_vtr = True
         self.zmq_out = None  # it will be initialized at worker side
         self.zmq_in = None
 
     def worker(self, pipein):
-        velocity_compensation = False
-
-        try:
-            self.zmq_out = zm.ZMQSend()
-            self.zmq_in = zm.ZMQReceive(port=5566)
-        except zmq.error.ZMQError as e:
-            print('Cannot initialize zmq_worker %s' % e)
-
         while True:
-            blocknum, block, output = 0, None, {}
-            idoffset = 0
             ispiped = False
-
             if pipein.poll():
                 item = pipein.recv()
                 ispiped = True
@@ -1241,66 +1297,62 @@ class VTRDemodCache(ldd.DemodCache):
             if item[0] == "DEMOD":
                 blocknum, block, target_MTF = item[1:]
 
+                output = {}
+
+                if "fft" not in block:
+                    output["fft"] = npfft.fft(block["rawinput"])
+                    fftdata = output["fft"]
+                else:
+                    fftdata = block["fft"]
+
                 if (
                     "demod" not in block
                     or np.abs(block["MTF"] - target_MTF) > self.MTF_tolerance
                 ):
-                    #if "fft" not in block:
-                    #    output["fft"] = npfft.fft(block["rawinput"])
-                    #    fftdata = output["fft"]
-                    #else:
-                    #    fftdata = block["fft"]
-
-                    if velocity_compensation:
-                        resampled, state = self.rf.cdtw.velocity_compensator(block["rawinput"])
-                    else:
-                        resampled, state = block["rawinput"], True
-
-                    if state:
-                        blocknum += idoffset
-                        indata_fft = np.fft.fft(resampled[: self.rf.blocklen])
-
-                        output["demod"] = self.rf.demodblock(data=resampled,
-                            fftdata=indata_fft, mtf_level=target_MTF, cut=True,
-                            zmqio=(self.zmq_out, self.zmq_in)
+                    if not self.cvbs_decode:
+                        # RF decode
+                        output["demod"] = self.rf.demodblock(
+                            fftdata=fftdata, mtf_level=target_MTF, cut=True
                         )
-                        output["MTF"] = target_MTF
-
                     else:
-                        idoffset += 1
-                        output["demod"] = {}
-                        print('missed frame')
+                        # CVBS decode
+                        output["demod"] = self.rf.cvbsblock(
+                            fftdata=fftdata, mtf_level=target_MTF, cut=True
+                        )
 
+                    output["MTF"] = target_MTF
+                    self.q_out.put((blocknum, output))
 
             elif item[0] == "NEWPARAMS":
-                print('elfig')
                 self.apply_newparams(item[1])
 
-            self.q_out.put((blocknum, output))
             if not ispiped:
                 self.q_in.task_done()
 
 
 class VHSRFDecode(ldd.RFDecode):
-    def __init__(
-        self,
-        inputfreq=40,
-        system="NTSC",
-        tape_format="VHS",
-        dod_threshold_p=vhs_formats.DEFAULT_THRESHOLD_P_DDD,
-        dod_threshold_a=None,
-        dod_hysteresis=vhs_formats.DEFAULT_HYSTERESIS,
-        track_phase=None,
-    ):
+    def __init__(self, inputfreq=40, system="NTSC", tape_format="VHS", rf_options={}):
 
         # First init the rf decoder normally.
         super(VHSRFDecode, self).__init__(
             inputfreq, system, decode_analog_audio=False, has_analog_audio=False
         )
 
-        self.dod_threshold_p = dod_threshold_p
-        self.dod_threshold_a = dod_threshold_a
-        self.dod_hysteresis = dod_hysteresis
+        # controls the sharpness EQ gain
+        self.sharpness_level = (
+            rf_options.get("sharpness", vhs_formats.DEFAULT_SHARPNESS) / 100
+        )
+
+        self.dod_threshold_p = rf_options.get(
+            "dod_threshold_p", vhs_formats.DEFAULT_THRESHOLD_P_DDD
+        )
+        self.dod_threshold_a = rf_options.get("dod_threshold_a", None)
+        self.dod_hysteresis = rf_options.get(
+            "dod_hysteresis", vhs_formats.DEFAULT_HYSTERESIS
+        )
+        self.chroma_trap = rf_options.get("chroma_trap", False)
+        track_phase = rf_options.get("track_phase", None)
+        high_boost = rf_options.get("high_boost", None)
 
         if track_phase is None:
             self.track_phase = 0
@@ -1319,9 +1371,13 @@ class VHSRFDecode(ldd.RFDecode):
 
         # Then we override the laserdisc parameters with VHS ones.
         if system == "PAL":
-            # Give the decoder it's separate own full copy to be on the safe side.
-            self.SysParams = copy.deepcopy(vhs_formats.SysParams_PAL_VHS)
-            self.DecoderParams = copy.deepcopy(vhs_formats.RFParams_PAL_VHS)
+            if tape_format == "UMATIC":
+                self.SysParams = copy.deepcopy(vhs_formats.SysParams_PAL_UMATIC)
+                self.DecoderParams = copy.deepcopy(vhs_formats.RFParams_PAL_UMATIC)
+            else:
+                # Give the decoder it's separate own full copy to be on the safe side.
+                self.SysParams = copy.deepcopy(vhs_formats.SysParams_PAL_VHS)
+                self.DecoderParams = copy.deepcopy(vhs_formats.RFParams_PAL_VHS)
         elif system == "NTSC":
             if tape_format == "UMATIC":
                 self.SysParams = copy.deepcopy(vhs_formats.SysParams_NTSC_UMATIC)
@@ -1338,6 +1394,8 @@ class VHSRFDecode(ldd.RFDecode):
         cc = self.DecoderParams["color_under_carrier"] / 1000000
 
         DP = self.DecoderParams
+
+        self.high_boost = high_boost if high_boost is not None else DP["boost_bpf_mult"]
 
         self.Filters["RFVideoRaw"] = lddu.filtfft(
             sps.butter(
@@ -1386,15 +1444,124 @@ class VHSRFDecode(ldd.RFDecode):
             self.blocklen,
         )
 
-        y_fm_filter = y_fm * y_fm_lowpass * y_fm_highpass * self.Filters["hilbert"]
+        self.Filters["RFVideo"] = y_fm * y_fm_lowpass * y_fm_highpass
 
-        self.Filters["RFVideo"] = y_fm_filter
+        self.Filters["RFTop"] = sps.butter(
+            1,
+            [
+                DP["boost_bpf_low"] / self.freq_hz_half,
+                DP["boost_bpf_high"] / self.freq_hz_half,
+            ],
+            btype="bandpass",
+            output="sos",
+        )
 
-        # Video (luma) de-emphasis
-        db, da = FMDeEmphasis(self.freq_hz, tau=DP["deemph_tau"]).get()
+        # Video (luma) main de-emphasis
+        #        db3, da3 = FMDeEmphasis(self.freq_hz, tau=DP["deemph_tau"]).get()
+        db, da = FMDeEmphasisB(self.freq_hz, DP["deemph_gain"], DP["deemph_mid"]).get()
+
+        #        da3, db3 = gen_high_shelf(260000 / 1.0e6, 14, 1 / 2, inputfreq)
+
+        if False:
+            import matplotlib.pyplot as plt
+
+            corner_freq = 1 / (math.pi * 2 * DP["deemph_tau"])
+
+            db2, da2 = FMDeEmphasisB(
+                self.freq_hz, DP["deemph_gain"], DP["deemph_mid"] + 50000
+            ).get()
+            db3, da3 = FMDeEmphasisB(
+                self.freq_hz, DP["deemph_gain"], DP["deemph_mid"] - 50000
+            ).get()
+            self.Filters["FVideo2"] = (
+                lddu.filtfft((db2, da2), self.blocklen) * self.Filters["Fvideo_lpf"]
+            )
+            self.Filters["FVideo3"] = (
+                lddu.filtfft((db3, da3), self.blocklen) * self.Filters["Fvideo_lpf"]
+            )
+
+            fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, sharex=True)
+
+            w1, h1 = sps.freqz(db, da, fs=self.freq_hz)
+            w2, h2 = sps.freqz(db2, da2, fs=self.freq_hz)
+            w3, h3 = sps.freqz(db3, da3, fs=self.freq_hz)
+            # VHS eyeballed freqs.
+            test_arr = np.array(
+                [
+                    [
+                        0.04,
+                        0.05,
+                        0.07,
+                        0.1,
+                        corner_freq / 1e6,
+                        0.2,
+                        0.3,
+                        0.4,
+                        0.5,
+                        0.7,
+                        1,
+                        2,
+                        3,
+                        4,
+                        5,
+                    ],
+                    [
+                        0.4,
+                        0.6,
+                        1.2,
+                        2.2,
+                        3,
+                        5.25,
+                        7.5,
+                        9.2,
+                        10.5,
+                        11.75,
+                        12.75,
+                        13.5,
+                        13.8,
+                        13.9,
+                        14,
+                    ],
+                ]
+            )
+            # print(test_arr[0])
+            test_arr[0] *= 1000000.0
+            test_arr[1] *= -1
+            #            test_arr[0::] *= 1e6
+
+            # ax1.plot((20 * np.log10(self.Filters["Fdeemp"])))
+            #        ax1.plot(hilbert, color='#FF0000')
+            # ax1.plot(data, color="#00FF00")
+            ax1.plot(test_arr[0], test_arr[1], color="#000000")
+            ax1.plot(w1, 20 * np.log10(h1))
+            ax2.plot(test_arr[0], test_arr[1], color="#000000")
+            ax2.plot(w2, 20 * np.log10(h2))
+            ax3.plot(test_arr[0], test_arr[1], color="#000000")
+            ax3.plot(w3, 20 * np.log10(h3))
+            ax4.plot(test_arr[0], test_arr[1])
+            ax1.axhline(-3)
+            ax2.axhline(-3)
+            ax3.axhline(-3)
+            ax1.axhline(-7)
+            ax2.axhline(-7)
+            ax3.axhline(-7)
+            ax1.axvline(corner_freq)
+            ax2.axvline(corner_freq)
+            ax3.axvline(corner_freq)
+            # print("Vsync IRE", self.SysParams["vsync_ire"])
+            #            ax2 = ax1.twinx()
+            #            ax3 = ax1.twinx()
+            # ax2.plot(data[:2048])
+            #            ax4.plot(env, color="#00FF00")
+            #            ax3.plot(np.angle(hilbert))
+            #            ax4.plot(hilbert.imag)
+            #            crossings = find_crossings(env, 700)
+            #            ax3.plot(crossings, color="#0000FF")
+            plt.show()
+            #            exit(0)
 
         self.Filters["FEnvPost"] = sps.butter(
-            1, [1000000 / self.freq_hz_half], btype="lowpass", output="sos"
+            1, [700000 / self.freq_hz_half], btype="lowpass", output="sos"
         )
 
         self.Filters["Fdeemp"] = lddu.filtfft((db, da), self.blocklen)
@@ -1407,7 +1574,7 @@ class VHSRFDecode(ldd.RFDecode):
         # TODO: Needs tweaking
         # Note: order will be doubled since we use filtfilt.
         chroma_lowpass = sps.butter(
-            4,
+            2,
             [50000 / self.freq_hz_half, DP["chroma_bpf_upper"] / self.freq_hz_half],
             btype="bandpass",
             output="sos",
@@ -1427,7 +1594,7 @@ class VHSRFDecode(ldd.RFDecode):
         # Needs tweaking.
         # Note: order will be doubled since we use filtfilt.
         chroma_bandpass_final = sps.butter(
-            2,
+            1,
             [
                 (fsc_mhz - 0.64) / out_frequency_half,
                 (fsc_mhz + 0.24) / out_frequency_half,
@@ -1475,48 +1642,40 @@ class VHSRFDecode(ldd.RFDecode):
         # We combine the color carrier with a wave with a frequency of the
         # subcarrier + the downconverted chroma carrier to get the original
         # color wave back.
-        self.chroma_heterodyne = {}
-
-        self.chroma_heterodyne[0] = sps.sosfiltfilt(
-            het_filter, self.cc_wave * self.fsc_wave
-        )
-        self.chroma_heterodyne[1] = sps.sosfiltfilt(
-            het_filter, cc_wave_90 * self.fsc_wave
-        )
-        self.chroma_heterodyne[2] = sps.sosfiltfilt(
-            het_filter, cc_wave_180 * self.fsc_wave
-        )
-        self.chroma_heterodyne[3] = sps.sosfiltfilt(
-            het_filter, cc_wave_270 * self.fsc_wave
+        self.chroma_heterodyne = np.array(
+            [
+                sps.sosfiltfilt(het_filter, self.cc_wave * self.fsc_wave),
+                sps.sosfiltfilt(het_filter, cc_wave_90 * self.fsc_wave),
+                sps.sosfiltfilt(het_filter, cc_wave_180 * self.fsc_wave),
+                sps.sosfiltfilt(het_filter, cc_wave_270 * self.fsc_wave),
+            ]
         )
 
-        self.int_amplitude = list()
-        self.ext_amplitude = list()
-        self.int_min = list()
-        self.min_ext_demod = list()
-        self.min_demod = list()
-        yiir_b, yiir_a = utils.firdes_lowpass(self.freq_hz, 2.7e6, 800e3, order_limit=20)
-        fmhipass = utils.firdes_highpass(self.freq_hz, 2.4e6, 500e3, order_limit=20)
-        fmlopass = utils.firdes_lowpass(self.freq_hz, 6.4e6, 3e6, order_limit=20)
-        # fmhipass = utils.firdes_highpass(self.freq_hz, 3490000, 500e3, order_limit=1)
-        # fmlopass = utils.firdes_lowpass(self.freq_hz, 5580000, 3e6, order_limit=1)
+        # Increase the cutoff at the end of blocks to avoid edge distortion from filters
+        # making it through.
+        self.blockcut_end = 1024
+        self.demods = 0
 
-        self.luma_limit = utils.FiltersClass(yiir_b, yiir_a, self.freq_hz)
-        self.YFM_filter = {
-            0: utils.FiltersClass(fmhipass[0], fmhipass[1], self.freq_hz),
-            1: utils.FiltersClass(fmlopass[0], fmlopass[1], self.freq_hz),
+        # sharpness filter / video EQ
+        iir_eq_loband = utils.firdes_highpass(
+            self.freq_hz,
+            DP["video_eq"]["loband"]["corner"],
+            DP["video_eq"]["loband"]["transition"],
+            DP["video_eq"]["loband"]["order_limit"],
+        )
+        iir_eq_hiband = utils.firdes_highpass(
+            self.freq_hz,
+            DP["video_eq"]["hiband"]["corner"],
+            DP["video_eq"]["hiband"]["transition"],
+            DP["video_eq"]["hiband"]["order_limit"],
+        )
+
+        self.videoEQFilter = {
+            0: utils.FiltersClass(iir_eq_loband[0], iir_eq_loband[1], self.freq_hz),
+            1: utils.FiltersClass(iir_eq_hiband[0], iir_eq_hiband[1], self.freq_hz),
         }
-        self.dtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
-                                  self.SysParams["FPS"] * 2,
-                                  self.freq_hz, blocklen=self.blocklen)
-        self.cdtw = dtw.TimeWarper(self.DecoderParams["color_under_carrier"],
-                                   self.SysParams["FPS"] * 2,
-                                   self.freq_hz, blocklen=self.blocklen)
-        # utils.filter_plot(fmhipass[0], fmhipass[1], self.freq_hz, 'highpass', 'FM highpass')
-        # utils.filter_plot(fmlopass[0], fmlopass[1], self.freq_hz, 'lowpass', 'FM lowpass')
-        self.zeroblock = np.zeros(pow(2, 15))
-        print('Set samplerate at: %d Hz' % self.freq_hz)
 
+        self.chromaTrap = ChromaSepClass(self.freq_hz, self.SysParams["fsc_mhz"])
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
@@ -1529,191 +1688,86 @@ class VHSRFDecode(ldd.RFDecode):
         self.delays["video_sync"] = 0
         self.delays["video_white"] = 0
 
-    def external_demod(self, zmqio, rf, manual_gain=1.0):
-        ## pipes to external demod
-        zmq_out = zmqio[0]
-        zmq_in = zmqio[1]
-        out_samples = len(rf)
-        zmq_out.send_complex(rf)
+    # It enhances the upper band of the video signal
+    def video_EQ(self, demod):
+        overlap = 10
+        ha = self.videoEQFilter[0].filtfilt(demod), \
+             self.videoEQFilter[1].filtfilt(demod)
+        hb = self.videoEQFilter[0].lfilt(demod[:overlap]), \
+             self.videoEQFilter[1].lfilt(demod[:overlap])
+        hc = np.append(hb[0][:overlap], ha[0][overlap:]), \
+             np.append(hb[1][:overlap], ha[1][overlap:])  # first edge distortion hack
 
-        demod = zmq_in.receive(out_samples)
-
-        # DC removes using a moving average
-        # it will take a complete frame to stabilize
-        self.min_ext_demod.append(min(demod))
-        demod -= utils.moving_average(self.min_ext_demod, window=self.SysParams["frame_lines"])
-
-        out_video = np.round(
-            self.iretohz(self.SysParams["vsync_ire"]) + (
-                    demod * manual_gain * self.iretohz(100) / 28
-            )
-        ).astype(np.int)
-
-        assert len(out_video) == out_samples, \
-            'Something gone wrong at external demod, expected samples %d, received %d' % (len(out_video), out_samples)
-
-        demod_fft = np.fft.fft(out_video)
-        #out_video = self.YNR(out_video)
-
-        return out_video, demod_fft, out_video
-
-    def hilbert_demod(self, data):
-
-        #hi = self.YFM_filter[0].work(data)
-        #pre_filtered = self.YFM_filter[1].work(hi)
-        fftdata = np.fft.fft(data)
-        indata_fft_filt = fftdata * self.Filters["RFVideo"]
-        rf_filtered = np.fft.ifft(indata_fft_filt)
-        demod = unwrap_hilbert(rf_filtered, self.freq_hz)
-        demod_fft = np.fft.fft(demod)
-        out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
-        #self.min_demod.append(min(out_video))
-        #out_video -= utils.moving_average(self.min_demod, window=self.SysParams["frame_lines"])
-        #out_video = np.add(out_video, self.iretohz(self.SysParams["vsync_ire"]))
-
-        return demod, demod_fft, out_video
-
-
-    def do_emd(self, x):
-        from pyhht.visualization import plot_imfs
-        import matplotlib.pyplot as plt
-        t = np.linspace(0, 1, len(x))
-        decomposer = EMD(x, maxiter=3000, n_imfs=3)
-        imfs = decomposer.decompose()
-        #plt.plot(imfs[0], t)
-        #plt.show()
-        #plot_imfs(x, imfs, t)
-        imfsum = np.zeros(len(imfs[0]))
-        for i in range(0, min(imfs.shape[0], 3)):
-            imfsum = np.add(imfsum, imfs[i])
-        return imfsum
-
-    def alt_fm_demod(self, data):
-        demod, t = inst_freq(data)
-        demod = np.append(demod, np.zeros(2))
-        demod = np.add(np.multiply(demod, -self.freq_hz), self.freq_hz / 2)
-        return demod
-
-    def hilbert_huang_demod(self, data):
-
-        # second RF AFE filter
-        hi = self.YFM_filter[0].workl(data)
-        rf_filtered = self.YFM_filter[1].workl(hi)
-
-        #First RF filter AFE
-        fftdata = np.fft.fft(rf_filtered)
-        indata_fft_filt = fftdata * self.Filters["RFVideo"]
-        rf_filtered = np.fft.ifft(indata_fft_filt)
-
-        #imfs = self.do_emd(rf_filtered.real)
-        #hht_fft = np.fft.fft(imf0)
-        #indata_fft_filt = hht_fft * self.Filters["RFVideo"]
-        #out_samples = len(data)
-
-
-        #imfs = self.do_emd(rf_filtered.real) #+ 1j * self.do_emd(rf_filtered.imag)
-
-        #FM demod
-        demod = self.alt_fm_demod(rf_filtered.real)
-
-        #alt_demod = unwrap_hilbert(imfs, self.freq_hz)
-
-        #DC removal
-        self.min_demod.append(min(demod))
-        demod -= utils.moving_average(self.min_demod, window=self.SysParams["frame_lines"])
-        #demod += self.iretohz(self.SysParams["vsync_ire"]) / 2
-
-        #alt_demod -= utils.moving_average(self.min_ext_demod, window=self.SysParams["frame_lines"])
-
-
-        demod_fft = np.fft.fft(demod)
-        out_video = np.fft.ifft(demod_fft * self.Filters["FVideo"]).real
-        #out_video = self.YNR(out_video)
-        #out_video = self.luma_limit.work(out_video)
-        #assert len(out_video) == out_samples
-        return demod, demod_fft, out_video
-
-
-    def amplitude_log(self, ext_video, int_video):
-        print('-> min int %d, max int %d :: min ext %d, max ext %d' % (
-              min(int_video), max(int_video),
-              min(ext_video), max(ext_video)
-            )
+        hf = np.multiply(
+            np.add(
+                np.multiply(self.DecoderParams["video_eq"]["loband"]["gain"], hc[0]),
+                np.multiply(self.DecoderParams["video_eq"]["hiband"]["gain"], hc[1]),
+            ),
+            0.5,
         )
 
-        self.int_min.append(min(int_video))
-        int_amplitude = max(int_video) - min(int_video)
-        ext_amplitude = max(ext_video) - min(ext_video)
-        self.int_amplitude.append(int_amplitude)
-        self.ext_amplitude.append(ext_amplitude)
-        print('->> amp int %.3f :: amp ext %.3f :: min int %.3f' % (
-            sum(self.int_amplitude) / len(self.int_amplitude),
-            sum(self.ext_amplitude) / len(self.ext_amplitude),
-            sum(self.int_min) / len(self.int_min)
-            )
-        )
+        gain = 0.7 * self.sharpness_level
 
-    # It resamples the luminance data to 4 * Fc
-    # Applies the comb filter, then resamples it back
-    # The converter params are the same as in libsamplerate:
-    # In ascending quality/complexity order:
-    #   zero_order_hold, linear, sinc_fastest, sinc_best
-    def YNR(self, luminance, converter='linear', delay=-2):
-        quotients_limit = int(1e4)
-        Fc = int(self.SysParams["fsc_mhz"] * 4 * 1e6)
-        ratio = Fraction(Fc/self.freq_hz).limit_denominator(quotients_limit)
-        dw_ratio = ratio.numerator / ratio.denominator
-        up_ratio = ratio.denominator / ratio.numerator
-        downsampled = resample(luminance, ratio=dw_ratio, converter_type=converter)
-        delayed = deque(downsampled.copy())
-        delayed.rotate(delay)
-        combed = np.multiply(np.add(downsampled, np.asarray(delayed)), 0.5)
-        result = resample(combed, ratio=up_ratio, converter_type=converter)
-        """
-        if len(luminance) > len(result):
-            err = len(luminance) - len(result)
-            result = np.append(result, luminance[len(luminance) - err: len(luminance)])
-        else:
-            result = result[:len(luminance)]
-        """
-        result = utils.pad_or_truncate(result, luminance)
-        assert len(luminance) == len(result), \
-            'Something wrong happened during the comb filtering stage. Expected samples %d, got %d' % \
-            (len(luminance), len(result))
+        result = np.multiply(np.add(np.roll(np.multiply(gain, hf), 0), demod), 1)
+
         return result
 
-    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False, zmqio=(None, None), amp_comp=True):
+    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False):
         rv = {}
 
         if fftdata is not None:
             indata_fft = fftdata
         elif data is not None:
-            indata_fft = np.fft.fft(data[: self.blocklen])
+            indata_fft = npfft.fft(data[: self.blocklen])
         else:
             raise Exception("demodblock called without raw or FFT data")
 
         if data is None:
-            data = np.fft.ifft(indata_fft).real
+            data = npfft.ifft(indata_fft).real
 
-        # switches between internal demodulator and the external one
-        if zmqio[0] is None:
-            demod, demod_fft, out_video = self.hilbert_demod(indata_fft)
-        else:
-            #indata_fft_filt = indata_fft * self.Filters["RFVideo"]
-            #rf_filtered = np.fft.ifft(indata_fft_filt)
-            #demod, demod_fft, int_video = self.external_demod(zmqio, data)
-            if amp_comp:
-                _, _, out_video = self.hilbert_demod(data)
-                demod, demod_fft, int_video = self.hilbert_huang_demod(data)
-                #if velocity_compensate:
-                #    out_video = np.add(out_video, -250e3)
-                # assert not np.isnan(out_video).any() and not np.isnan(out_chroma).any(), 'Got NAN at demodblock()'
-                # assert len(out_video) == len(self.zeroblock)
-                # print('After max:', min(out_video), max(out_video))
+        raw_filtered = npfft.ifft(
+            indata_fft * self.Filters["RFVideoRaw"] * self.Filters["hilbert"]
+        ).real
 
-                self.amplitude_log(out_video, int_video)
+        # Calculate an evelope with signal strength using absolute of hilbert transform.
+        # Roll this a bit to compensate for filter delay, value eyballed for now.
+        raw_env = np.roll(np.abs(raw_filtered), 4)
+        env = filter_simple(raw_env, self.Filters["FEnvPost"])
+        env_mean = np.mean(env)
 
-        out_video05 = np.fft.ifft(demod_fft * self.Filters["FVideo05"]).real
+        # Applies RF filters
+        indata_fft_filt = indata_fft * self.Filters["RFVideo"]
+        data_filtered = npfft.ifft(indata_fft_filt)
+        # Boost high frequencies in areas where the signal is weak to reduce missed zero crossings
+        # on sharp transitions. Using filtfilt to avoid phase issues.
+        high_part = filter_simple(data_filtered, self.Filters["RFTop"]) * (
+            (env_mean * 0.9) / env
+        )
+        indata_fft_filt += npfft.fft(high_part * self.high_boost)
+
+        hilbert = npfft.ifft(indata_fft_filt * self.Filters["hilbert"])
+
+        # FM demodulator
+        demod = unwrap_hilbert(hilbert, self.freq_hz).real
+
+        if self.chroma_trap:
+            # applies the Subcarrier trap
+            demod = self.chromaTrap.work(demod)
+
+        # Temporarily disabled until adapted for different deemph.
+        # if self.sharpness_level > 0:
+        # applies the video EQ
+        # demod = self.video_EQ(demod)
+
+        # applies main deemphasis filter
+        demod_fft = npfft.rfft(demod)
+        out_video = npfft.irfft(
+            demod_fft * self.Filters["FVideo"][0 : (self.blocklen // 2) + 1]
+        ).real
+
+        out_video05 = npfft.irfft(
+            demod_fft * self.Filters["FVideo05"][0 : (self.blocklen // 2) + 1]
+        ).real
         out_video05 = np.roll(out_video05, -self.Filters["F05_offset"])
 
         # Filter out the color-under signal from the raw data.
@@ -1726,18 +1780,17 @@ class VHSRFDecode(ldd.RFDecode):
         # crude DC offset removal
         out_chroma = out_chroma - np.mean(out_chroma)
 
-        from scipy.signal import hilbert as hilbt
-
-        raw_filtered = np.fft.ifft(indata_fft * self.Filters["RFVideoRaw"]).real
-        # Calculate an evelope with signal strength using absolute of hilbert transform.
-        env = np.abs(hilbt(raw_filtered))
-
-        assert len(out_video) == self.blocklen, 'Unexpected uneven block'
-
         if False:
             import matplotlib.pyplot as plt
 
             fig, ax1 = plt.subplots()
+
+            #out_video2 = np.fft.irfft(
+            #    demod_fft * self.Filters["FVideo2"][0 : (self.blocklen // 2) + 1]
+            #).real
+            #out_video3 = np.fft.irfft(
+            #    demod_fft * self.Filters["FVideo3"][0 : (self.blocklen // 2) + 1]
+            #).real
             # ax1.plot((20 * np.log10(self.Filters["Fdeemp"])))
             #        ax1.plot(hilbert, color='#FF0000')
             # ax1.plot(data, color="#00FF00")
@@ -1748,19 +1801,78 @@ class VHSRFDecode(ldd.RFDecode):
             # print("Vsync IRE", self.SysParams["vsync_ire"])
             #            ax2 = ax1.twinx()
             #            ax3 = ax1.twinx()
-            if zmqio[0] is not None:
-                ax1.plot(out_video[:8192], color="#FF0000")
-                #ax1.plot(int_video[:8192], color="#0000FF")
-            else:
-                ax1.plot(out_video, color="#FF0000")
+            ax1.plot(out_video)
+            #ax2.plot(out_video2[:2048])
+            #ax3.plot(out_video3[:2048])
+            #            ax4.plot(env, color="#00FF00")
+            #            ax3.plot(np.angle(hilbert))
+            #            ax4.plot(hilbert.imag)
             #            crossings = find_crossings(env, 700)
             #            ax3.plot(crossings, color="#0000FF")
             plt.show()
+            #exit(0)
 
         # demod_burst is a bit misleading, but keeping the naming for compatability.
         video_out = np.rec.array(
             [out_video, demod, out_video05, out_chroma, env, data],
             names=["demod", "demod_raw", "demod_05", "demod_burst", "envelope", "raw"],
+        )
+
+        rv["video"] = (
+            video_out[self.blockcut : -self.blockcut_end] if cut else video_out
+        )
+
+        return rv
+
+    def cvbsblock(self, data=None, mtf_level=0, fftdata=None, cut=False):
+        data = npfft.ifft(fftdata).real
+
+        rv = {}
+
+        # applies the Subcarrier trap
+        # (this will remove most chroma info)
+        # luma = self.chromaTrap.work(data)
+        luma = data
+
+        luma += 0xFFFF / 2
+        luma /= 4 * 0xFFFF
+        luma *= self.iretohz(100)
+        luma += self.iretohz(self.SysParams["vsync_ire"])
+
+        luma05_fft = (
+            npfft.rfft(luma)
+            * self.Filters["F05"][: (len(self.Filters["F05"]) // 2) + 1]
+        )
+        luma05 = npfft.irfft(luma05_fft)
+        luma05 = np.roll(luma05, -self.Filters["F05_offset"])
+
+        if False:
+            import matplotlib.pyplot as plt
+
+            fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+            # ax1.plot((20 * np.log10(self.Filters["Fdeemp"])))
+            #        ax1.plot(hilbert, color='#FF0000')
+            # ax1.plot(data, color="#00FF00")
+            ax1.axhline(self.iretohz(0))
+            ax1.axhline(self.iretohz(self.SysParams["vsync_ire"]))
+            ax1.axhline(self.iretohz(7.5))
+            ax1.axhline(self.iretohz(100))
+            # print("Vsync IRE", self.SysParams["vsync_ire"])
+            #            ax2 = ax1.twinx()
+            #            ax3 = ax1.twinx()
+            ax1.plot(luma[:2048])
+            ax2.plot(luma05[:2048])
+            #            ax4.plot(env, color="#00FF00")
+            #            ax3.plot(np.angle(hilbert))
+            #            ax4.plot(hilbert.imag)
+            #            crossings = find_crossings(env, 700)
+            #            ax3.plot(crossings, color="#0000FF")
+            plt.show()
+        #            exit(0)
+
+        video_out = np.rec.array(
+            [luma, luma05, luma, data],
+            names=["demod", "demod_05", "demod_burst", "raw"],
         )
 
         rv["video"] = (
