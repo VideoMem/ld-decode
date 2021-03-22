@@ -1,4 +1,5 @@
 import numpy as np
+from pyhht.utils import inst_freq
 from lddecode.utils import unwrap_hilbert
 from samplerate import resample
 from vhsdecode.utils import \
@@ -34,8 +35,10 @@ class HeadSwitchDetect:
 
         self.bandpass = FiltersClass(iir_bandpass[0], iir_bandpass[1], self.samp_rate)
         self.fdc_wave = gen_wave_at_frequency(fdc, fs, blocklen)
-        self.offset = np.mean(self.deFM(self.fdc_wave))
         self.last_velocity_offset = list()
+        self.offset = 0
+        self.offset = np.mean(self.deFM(self.fdc_wave))
+        self.last_velocity_offset.clear()
 
 
     def hhtdeFM(self, data):
