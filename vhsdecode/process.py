@@ -1739,6 +1739,7 @@ class VHSRFDecode(ldd.RFDecode):
 
         self.headsw.work(data)
 
+        #self.timewarp(data)
         #data = self.timewarp(data)
         #indata_fft = npfft.fft(data[: self.blocklen])
 

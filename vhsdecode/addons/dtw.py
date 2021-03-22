@@ -14,12 +14,12 @@ from lddecode.utils import unwrap_hilbert
 from samplerate import resample
 import dtw
 import os
+from vhsdecode.addons.headswitch import HeadSwitchDetect
 
-def cost(data):
-    a = np.abs(np.mean(np.cumsum(data)))
-    b = np.mean(data)
-    return a
-
+def cost(data, acc):
+    a = np.abs(np.mean(data))
+    b = np.abs(np.mean(acc))
+    return pow(a, 2) + 100 * b
 
 def edge_pad(data, edge_len):
     head = np.linspace(data[0], data[0], edge_len, dtype=data.dtype)
@@ -35,10 +35,11 @@ def trim(data, edge_trim):
 class TimeWarper:
     # fdc chroma subcarrier frequency
     def __init__(self, fdc, fv=60, fs=40e6, blocklen=pow(2, 15)):
-        self.plots = False
+        self.hs = HeadSwitchDetect(fdc, fv, fs, blocklen)
+        self.plots = True
         self.pid = os.getpid()
         self.chunks = 32
-        self.error = 0.0256
+        self.error = 0.00256
         self.drift = 0
         self.sign = 1
         self.dev = 1 - self.error, 1 + self.error
@@ -52,37 +53,10 @@ class TimeWarper:
         self.ratios = list()
 
         assert self.blocklen % self.chunks == 0, 'chunks should be a divisor of blocklen'
-
-        iir_slow = firdes_lowpass(self.samp_rate, self.harmonic_limit * self.fv, self.fv*10)
-        self.slow_filter = FiltersClass(iir_slow[0], iir_slow[1], self.samp_rate)
-        iir_loss = firdes_lowpass(self.samp_rate, self.fv, 1e3)
-        self.loss_filter = FiltersClass(iir_loss[0], iir_loss[1], self.samp_rate)
-
-        iir_bandpass = firdes_bandpass(
-            self.samp_rate,
-            fdc * 0.1,
-            100e3,
-            fdc * 1.1,
-            100e3
-        )
-
-        self.bandpass = FiltersClass(iir_bandpass[0], iir_bandpass[1], self.samp_rate)
-        self.framebuffer = list()
         self.min_dev = list()
         self.max_dev = list()
-        self.fdc_wave = gen_wave_at_frequency(fdc, fs, blocklen)
-        self.offset = np.mean(self.deFM(self.fdc_wave))
+        self.framebuffer = list()
 
-
-    def hhtdeFM(self, data):
-        instf, t = inst_freq(data)
-        return np.add(np.multiply(instf, -self.samp_rate), self.samp_rate /2)
-
-    def htdeFM(self, data):
-        return unwrap_hilbert(data, self.samp_rate)
-
-    def deFM(self, data):
-        return self.hhtdeFM(data)
 
     def edgeless_filt(self, data):
         edge_trim = int(self.drc / 8)
@@ -90,37 +64,33 @@ class TimeWarper:
         narrowband = self.bandpass.filtfilt(padded.real)
         return trim(narrowband, edge_trim)
 
-    # Measures the head switch jitter
-    def head_switch_jitter(self, data):
-        narrowband = self.bandpass.lfilt(data.real)
-        freq = self.deFM(narrowband)
-        velocity = self.slow_filter.lfilt(freq)
-        acceleration = np.diff(velocity)
-        rel_velocity = np.cumsum(acceleration)
-        return rel_velocity, \
-            np.append(acceleration, acceleration[len(acceleration)-1]),
-
     def loss_map(self, data):
         dtwspace = np.linspace(self.dev[0], self.dev[1], self.drc)
         losses = list()
         warps = list()
+
+        vel, acc, _ = self.hs.head_switch_jitter(data)
+        ref_cost = cost(vel, acc)
         for row, warp in enumerate(dtwspace):
             raw_warp = resample(data, ratio=warp, converter_type='linear')
             warps.append(raw_warp)
             warped = resample(data, ratio=warp, converter_type='linear')
-            _, acc = self.head_switch_jitter(warped)
-            loss = cost(acc)
+            vel, acc, _ = self.hs.head_switch_jitter(warped)
+            loss = cost(vel, acc)
             losses.append(loss)
 
-        r_id = self.loss_choose(losses)
+        r_id = int(np.where(losses == np.min(losses))[0])
+        #r_id = self.loss_choose(losses)
 
         if r_id != int(self.drc / 2):
             print('recursion choose', r_id)
+            loss_chosed = dtwspace[r_id]
+            print('loss choosed', loss_chosed)
             self.ratios.append(dtwspace[r_id])
-            self.min_dev.append(100 * np.min(self.ratios))
-            self.max_dev.append(100 * np.max(self.ratios))
-            _, warp_flat = self.loss_map(warps[r_id])
-            #warp_flat = warps[r_id]
+            self.min_dev.append(loss_chosed)
+            self.max_dev.append(loss_chosed)
+            #_, warp_flat = self.loss_map(warps[r_id])
+            warp_flat = warps[r_id]
             print('DTW pid %d avg speed slip - min: %.4f max: %.4f %% - %d -> %d' %
                 (self.pid, moving_average(self.min_dev, 1024), moving_average(self.max_dev, 1024), len(data), len(warp_flat)))
         else:
@@ -131,10 +101,10 @@ class TimeWarper:
         output = np.array(warp_flat)
 
         if self.plots:
-            vel0, acc0 = self.head_switch_jitter(data)
-            velw, accw = self.head_switch_jitter(output)
+            vel0, acc0, _ = self.hs.head_switch_jitter(data)
+            velw, accw, _ = self.hs.head_switch_jitter(output)
             plot_scope(losses, title='Losses', xlabel='warp id')
-            dualplot_scope(acc0, accw, title='Acceleration map', a_label='original', b_label='corrected')
+            dualplot_scope(vel0, velw, title='Velocity map', a_label='original', b_label='corrected')
 
         return None, output
 
@@ -172,8 +142,8 @@ class TimeWarper:
         half = int(len(losses) / 2)
         lo_loss = losses[:half+1] #self.loss_filter.lfilt(losses[:half+1])
         hi_loss = losses[half:] #self.loss_filter.lfilt(losses[half:])
-        plot_scope(np.concatenate((lo_loss, hi_loss)))
-        dualplot_scope(lo_loss, hi_loss)
+        #plot_scope(np.concatenate((lo_loss, hi_loss)))
+        #dualplot_scope(lo_loss, hi_loss)
         hi_diff = np.diff(hi_loss)
         lo_diff = np.diff(lo_loss)
         if np.mean(hi_loss) < np.diff(lo_loss)[0]:
