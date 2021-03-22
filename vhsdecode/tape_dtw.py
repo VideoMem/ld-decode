@@ -140,7 +140,7 @@ class TimeWarper:
         acceleration = np.diff(velocity)
 
         print('Average offset %.2f, max %.2f, min %.2f ' % (average_vel_offset, np.max(velocity), np.min(velocity)))
-        return velocity, \
+        return rel_velocity, \
             np.append(acceleration, acceleration[len(acceleration)-1]), \
             average_vel_offset
 
