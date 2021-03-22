@@ -17,10 +17,12 @@ def gen_compl_wave_at_frequency(frequency, sample_frequency, num_samples):
     return np.exp(-2 * np.pi * wave_scale * samples * 1j)
 
 
+# returns the indexes where the signal crosses zero
 def zero_cross_det(data):
     return np.where(np.diff(np.sign(data)))[0]
 
 
+# crops a wave at the zero cross detection
 def auto_chop(data):
     zeroes = zero_cross_det(data)
     first = zeroes[0]
@@ -36,12 +38,25 @@ def auto_chop(data):
     return data[first:last], first, last
 
 
+# simple scope plot
 def plot_scope(data):
     fig, ax1 = plt.subplots()
     ax1.plot(data, color="#FF0000")
     plt.show()
 
 
+# simple scope plot
+def dualplot_scope(ch0, ch1):
+    fig, ax1 = plt.subplots()
+    ax1.plot(ch0, color="#FF0000")
+    ax1.plot(ch1, color="#0000FF")
+    plt.show()
+
+def plot_image(data):
+    plt.imshow(data,  cmap="hot", clim=(0, 1.0))
+    plt.show()
+
+# pads data with filler is len(data) < len(filler), otherwise truncates it
 def pad_or_truncate(data, filler):
     if len(filler) > len(data):
         err = len(filler) - len(data)
@@ -81,7 +96,7 @@ def firdes_lowpass(samp_rate, cutoff, transition_width, order_limit=20):
 
 
 def firdes_highpass(samp_rate, cutoff, transition_width, order_limit=20):
-    passband, stopband = cutoff, cutoff - transition_width
+    passband, stopband = cutoff, cutoff + transition_width
     order, normal_cutoff =\
         design_filter(samp_rate, passband, stopband, order_limit)
     return signal.butter(order, normal_cutoff, btype="highpass", fs=samp_rate)
@@ -95,6 +110,7 @@ def firdes_bandpass(samp_rate, f0, t0, f1, t1, order_limit=20):
     return signal.butter(order, normal_cutoff, btype="bandpass", fs=samp_rate)
 
 
+# makes a bode plot of an IIR filter
 def filter_plot(iir_b, iir_a, samp_rate, type, title):
     import matplotlib.pyplot as plt
     from math import log10
@@ -125,10 +141,11 @@ class FiltersClass:
     def rate(self):
         return self.samp_rate
 
-    def work(self, data):
+    def filtfilt(self, data):
         output = signal.filtfilt(self.iir_b, self.iir_a, data)
         return output
 
-    def workl(self, data):
+    def lfilt(self, data):
         output, self.z = signal.lfilter(self.iir_b, self.iir_a, data, zi=self.z)
         return output
+

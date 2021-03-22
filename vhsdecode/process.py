@@ -9,21 +9,12 @@ import lddecode.core as ldd
 import lddecode.utils as lddu
 from lddecode.utils import unwrap_hilbert, inrange
 import vhsdecode.utils as utils
-import vhsdecode.tape_dtw as dtw
-from lddecode.utils import unwrap_hilbert
 
 import vhsdecode.formats as vhs_formats
 from vhsdecode.addons.FMdeemph import FMDeEmphasisB
 from vhsdecode.addons.chromasep import ChromaSepClass
 
-import zmq
-import vhsdecode.addons.zmq_grc as zm
-from vhsdecode.addons.FMdeemph import FMDeEmphasis
-from collections import deque
-from fractions import Fraction
-from samplerate import resample
-from pyhht.utils import inst_freq
-from pyhht import EmpiricalModeDecomposition as EMD
+from numba import njit
 
 # Use PyFFTW's faster FFT implementation if available
 try:
@@ -1278,9 +1269,6 @@ class VTRDemodCache(ldd.DemodCache):
             -1 if cvbs_decode else num_worker_threads,
             MTF_tolerance,
         )
-        self.is_vtr = True
-        self.zmq_out = None  # it will be initialized at worker side
-        self.zmq_in = None
 
     def worker(self, pipein):
         while True:
