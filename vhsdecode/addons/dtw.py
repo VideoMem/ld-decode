@@ -70,6 +70,8 @@ class TimeWarper:
         self.framebuffer = list()
         self.min_dev = list()
         self.max_dev = list()
+        self.offset = np.mean(self.deFM(self.fdc_wave))
+
 
     def hhtdeFM(self, data):
         instf, t = inst_freq(data)
@@ -79,7 +81,7 @@ class TimeWarper:
         return unwrap_hilbert(data, self.samp_rate)
 
     def deFM(self, data):
-        return self.htdeFM(data)
+        return self.hhtdeFM(data)
 
     def edgeless_filt(self, data):
         edge_trim = int(self.drc / 8)
