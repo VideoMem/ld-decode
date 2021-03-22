@@ -70,6 +70,7 @@ class TimeWarper:
         self.framebuffer = list()
         self.min_dev = list()
         self.max_dev = list()
+        self.fdc_wave = gen_wave_at_frequency(fdc, fs, blocklen)
         self.offset = np.mean(self.deFM(self.fdc_wave))
 
 

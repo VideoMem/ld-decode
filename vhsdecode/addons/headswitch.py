@@ -33,7 +33,9 @@ class HeadSwitchDetect:
         )
 
         self.bandpass = FiltersClass(iir_bandpass[0], iir_bandpass[1], self.samp_rate)
+        self.fdc_wave = gen_wave_at_frequency(fdc, fs, blocklen)
         self.offset = np.mean(self.deFM(self.fdc_wave))
+        self.last_velocity_offset = list()
 
 
     def hhtdeFM(self, data):
@@ -44,7 +46,7 @@ class HeadSwitchDetect:
         return unwrap_hilbert(data, self.samp_rate)
 
     def deFM(self, data):
-        return self.htdeFM(data)
+        return self.hhtdeFM(data)
 
     # Measures the head switch jitter
     def head_switch_jitter(self, data):
@@ -94,7 +96,7 @@ class HeadSwitchDetect:
 
     # writes a temporary raw file
     def work(self, data):
-        vel, acc = self.head_switch_jitter(data)
+        vel, acc, _ = self.head_switch_jitter(data)
         self.avg_max_vel.append(np.max(vel))
         self.avg_max_acc.append(np.max(acc))
         scale_vel = 1e5 # moving_average(self.avg_max_vel)
