@@ -122,13 +122,13 @@ class TimeWarper:
     # Measures the head switch jitter
     def head_switch_jitter(self, data):
 
-        narrowband = self.bandpass.workl(data.real)
+        narrowband = self.bandpass.lfilt(data.real)
 
         freq = self.deFM(narrowband)
         centered = np.add(freq, -self.offset)
         #plot_scope(centered[:1024])
 
-        velocity = self.slow_filter.workl(centered)
+        velocity = self.slow_filter.lfilt(centered)
         velocity_offset = np.mean(velocity)
         self.last_velocity_offset.append(velocity_offset)
         average_vel_offset = moving_average(self.last_velocity_offset, window=10)

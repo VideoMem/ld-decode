@@ -9,12 +9,23 @@ import lddecode.core as ldd
 import lddecode.utils as lddu
 from lddecode.utils import unwrap_hilbert, inrange
 import vhsdecode.utils as utils
+import vhsdecode.tape_dtw as dtw
+from lddecode.utils import unwrap_hilbert
 
 import vhsdecode.formats as vhs_formats
 from vhsdecode.addons.FMdeemph import FMDeEmphasisB
 from vhsdecode.addons.chromasep import ChromaSepClass
 
 from numba import njit
+
+import zmq
+import vhsdecode.addons.zmq_grc as zm
+from vhsdecode.addons.FMdeemph import FMDeEmphasis
+from collections import deque
+from fractions import Fraction
+from samplerate import resample
+from pyhht.utils import inst_freq
+from pyhht import EmpiricalModeDecomposition as EMD
 
 # Use PyFFTW's faster FFT implementation if available
 try:
@@ -1269,8 +1280,12 @@ class VTRDemodCache(ldd.DemodCache):
             -1 if cvbs_decode else num_worker_threads,
             MTF_tolerance,
         )
+        self.is_vtr = True
+        self.zmq_out = None  # it will be initialized at worker side
+        self.zmq_in = None
 
     def worker(self, pipein):
+        self.zmq_out = zm.ZMQSend()
         while True:
             ispiped = False
             if pipein.poll():
@@ -1300,7 +1315,8 @@ class VTRDemodCache(ldd.DemodCache):
                     if not self.cvbs_decode:
                         # RF decode
                         output["demod"] = self.rf.demodblock(
-                            fftdata=fftdata, mtf_level=target_MTF, cut=True
+                            zmqio=(self.zmq_out, None),
+                            fftdata=fftdata, mtf_level=target_MTF, cut=True,
                         )
                     else:
                         # CVBS decode
@@ -1664,6 +1680,12 @@ class VHSRFDecode(ldd.RFDecode):
         }
 
         self.chromaTrap = ChromaSepClass(self.freq_hz, self.SysParams["fsc_mhz"])
+        self.dtw = dtw.TimeWarper(
+            self.DecoderParams["color_under_carrier"],
+            self.SysParams["FPS"] * 2,
+            self.freq_hz,
+            blocklen=self.blocklen
+        )
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
@@ -1700,7 +1722,7 @@ class VHSRFDecode(ldd.RFDecode):
 
         return result
 
-    def demodblock(self, data=None, mtf_level=0, fftdata=None, cut=False):
+    def demodblock(self, zmqio, data=None, mtf_level=0, fftdata=None, cut=False, ):
         rv = {}
 
         if fftdata is not None:
@@ -1712,6 +1734,9 @@ class VHSRFDecode(ldd.RFDecode):
 
         if data is None:
             data = npfft.ifft(indata_fft).real
+
+        vel, acc, _ = self.dtw.head_switch_jitter(data)
+        zmqio[0].send_complex(vel + 1j * acc)
 
         raw_filtered = npfft.ifft(
             indata_fft * self.Filters["RFVideoRaw"] * self.Filters["hilbert"]
