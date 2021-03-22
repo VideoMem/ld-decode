@@ -14,6 +14,7 @@ import vhsdecode.formats as vhs_formats
 from vhsdecode.addons.FMdeemph import FMDeEmphasisB
 from vhsdecode.addons.chromasep import ChromaSepClass
 from vhsdecode.addons.dtw import TimeWarper
+from vhsdecode.addons.headswitch import HeadSwitchDetect
 
 from numba import njit
 
@@ -1672,6 +1673,12 @@ class VHSRFDecode(ldd.RFDecode):
             blocklen=self.blocklen
         )
 
+        self.headsw = HeadSwitchDetect(
+            self.DecoderParams["color_under_carrier"],
+            self.SysParams["FPS"] * 2,
+            self.freq_hz,
+            blocklen=self.blocklen
+        )
 
     def computedelays(self, mtf_level=0):
         """Override computedelays
@@ -1730,8 +1737,10 @@ class VHSRFDecode(ldd.RFDecode):
         if data is None:
             data = npfft.ifft(indata_fft).real
 
-        data = self.timewarp(data)
-        indata_fft = npfft.fft(data[: self.blocklen])
+        self.headsw.work(data)
+
+        #data = self.timewarp(data)
+        #indata_fft = npfft.fft(data[: self.blocklen])
 
         raw_filtered = npfft.ifft(
             indata_fft * self.Filters["RFVideoRaw"] * self.Filters["hilbert"]
@@ -1788,7 +1797,7 @@ class VHSRFDecode(ldd.RFDecode):
         # crude DC offset removal
         out_chroma = out_chroma - np.mean(out_chroma)
 
-        if True:
+        if False:
             import matplotlib.pyplot as plt
 
             fig, ax1 = plt.subplots()

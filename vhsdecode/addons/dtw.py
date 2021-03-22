@@ -16,9 +16,9 @@ import dtw
 import os
 
 def cost(data):
-    a = np.max(data) - np.min(data)
+    a = np.abs(np.mean(np.cumsum(data)))
     b = np.mean(data)
-    return pow(b, 2)
+    return a
 
 
 def edge_pad(data, edge_len):
@@ -35,24 +35,28 @@ def trim(data, edge_trim):
 class TimeWarper:
     # fdc chroma subcarrier frequency
     def __init__(self, fdc, fv=60, fs=40e6, blocklen=pow(2, 15)):
-        self.plots = True
+        self.plots = False
         self.pid = os.getpid()
         self.chunks = 32
-        self.error = 0.1
+        self.error = 0.0256
         self.drift = 0
         self.sign = 1
         self.dev = 1 - self.error, 1 + self.error
-        self.drc = self.chunks
+        self.drc = 256
         self.harmonic_limit = 3
         self.samp_rate = fs
         self.fdc = fdc
         self.fv = fv
         self.blocklen = blocklen
         self.blockid = 0
+        self.ratios = list()
+
         assert self.blocklen % self.chunks == 0, 'chunks should be a divisor of blocklen'
 
-        iir_slow = firdes_lowpass(self.samp_rate, self.harmonic_limit * self.fv, 1e3)
+        iir_slow = firdes_lowpass(self.samp_rate, self.harmonic_limit * self.fv, self.fv*10)
         self.slow_filter = FiltersClass(iir_slow[0], iir_slow[1], self.samp_rate)
+        iir_loss = firdes_lowpass(self.samp_rate, self.fv, 1e3)
+        self.loss_filter = FiltersClass(iir_loss[0], iir_loss[1], self.samp_rate)
 
         iir_bandpass = firdes_bandpass(
             self.samp_rate,
@@ -85,13 +89,107 @@ class TimeWarper:
 
     # Measures the head switch jitter
     def head_switch_jitter(self, data):
-        narrowband = self.edgeless_filt(data)
+        narrowband = self.bandpass.lfilt(data.real)
         freq = self.deFM(narrowband)
-        velocity = self.slow_filter.filtfilt(freq)
+        velocity = self.slow_filter.lfilt(freq)
         acceleration = np.diff(velocity)
         rel_velocity = np.cumsum(acceleration)
-        return velocity, \
+        return rel_velocity, \
             np.append(acceleration, acceleration[len(acceleration)-1]),
+
+    def loss_map(self, data):
+        dtwspace = np.linspace(self.dev[0], self.dev[1], self.drc)
+        losses = list()
+        warps = list()
+        for row, warp in enumerate(dtwspace):
+            raw_warp = resample(data, ratio=warp, converter_type='linear')
+            warps.append(raw_warp)
+            warped = resample(data, ratio=warp, converter_type='linear')
+            _, acc = self.head_switch_jitter(warped)
+            loss = cost(acc)
+            losses.append(loss)
+
+        r_id = self.loss_choose(losses)
+
+        if r_id != int(self.drc / 2):
+            print('recursion choose', r_id)
+            self.ratios.append(dtwspace[r_id])
+            self.min_dev.append(100 * np.min(self.ratios))
+            self.max_dev.append(100 * np.max(self.ratios))
+            _, warp_flat = self.loss_map(warps[r_id])
+            #warp_flat = warps[r_id]
+            print('DTW pid %d avg speed slip - min: %.4f max: %.4f %% - %d -> %d' %
+                (self.pid, moving_average(self.min_dev, 1024), moving_average(self.max_dev, 1024), len(data), len(warp_flat)))
+        else:
+            ratio = len(data) / len(warps[r_id])
+            warp_flat = resample(warps[r_id], ratio=ratio, converter_type='linear')
+            assert len(data) == len(warp_flat)
+
+        output = np.array(warp_flat)
+
+        if self.plots:
+            vel0, acc0 = self.head_switch_jitter(data)
+            velw, accw = self.head_switch_jitter(output)
+            plot_scope(losses, title='Losses', xlabel='warp id')
+            dualplot_scope(acc0, accw, title='Acceleration map', a_label='original', b_label='corrected')
+
+        return None, output
+
+    def list_flatten(self, list):
+        flatten = []
+        for buffer in list:
+            flatten.extend(buffer)
+        return flatten
+
+    def out_or_zero(self):
+        flatten = self.list_flatten(self.framebuffer)
+
+        if len(flatten) > self.blocklen:
+            head = flatten[:self.blocklen]
+            tail = flatten[self.blocklen:]
+            assert len(head) == self.blocklen
+            assert len(head) + len(tail) == len(flatten), 'expected %d got %d' % ( len(flatten), len(head) + len(tail) )
+            blockpos = self.blocklen * self.blockid
+            print('DTW pos: %d ->> tape slip: %d samples' % (blockpos, (len(tail) - self.blocklen)))
+            self.framebuffer.clear()
+            self.framebuffer.append(tail)
+            return head, True
+        else:
+            return np.zeros(self.blocklen), False
+
+    def velocity_compensatorB(self, data):
+        image, dewarp = self.loss_map(data)
+        if len(self.framebuffer) == 0:
+            self.framebuffer.append(dewarp)
+        self.framebuffer.append(dewarp)
+        self.blockid += 1
+        return self.out_or_zero()
+
+    def loss_choose(self, losses):
+        half = int(len(losses) / 2)
+        lo_loss = losses[:half+1] #self.loss_filter.lfilt(losses[:half+1])
+        hi_loss = losses[half:] #self.loss_filter.lfilt(losses[half:])
+        plot_scope(np.concatenate((lo_loss, hi_loss)))
+        dualplot_scope(lo_loss, hi_loss)
+        hi_diff = np.diff(hi_loss)
+        lo_diff = np.diff(lo_loss)
+        if np.mean(hi_loss) < np.diff(lo_loss)[0]:
+            #print(np.where(losses == np.min(hi_loss)))
+            return np.argmin(hi_loss) + half
+            comp_diff = hi_loss
+            sign = 1
+        else:
+            return np.argmin(lo_loss)
+            comp_diff = lo_loss
+            sign = -1
+
+        sub_id = 0
+        id_limit = len(comp_diff) - 2
+        while comp_diff[sub_id+1] < comp_diff[sub_id] and sub_id < id_limit:
+            sub_id += 1
+
+        id = half + (sub_id * sign)
+        return id
 
     def do(self, data):
         plots = False
@@ -127,106 +225,3 @@ class TimeWarper:
         if plots:
             dualplot_scope(data[:128], flatten_warp[:128])
         return flatten_warp
-
-    def loss_map(self, data):
-        #data = self.do(data)
-        data_chunks = np.split(data, self.chunks)
-        dtwspace = np.linspace(self.dev[0], self.dev[1], self.drc)
-        rows, columns = self.drc, len(data_chunks)
-        image = np.ones((rows, columns))
-        losses = list()
-        ratios = list()
-        warps_round = list()
-        warps = list()
-        edge_trim = int(self.drc / 8)
-        for col, raw_chunk in enumerate(data_chunks):
-            chunk = edge_pad(raw_chunk, edge_trim)
-            for row, warp in enumerate(dtwspace):
-                raw_warp = resample(raw_chunk, ratio=warp, converter_type='linear')
-                warps_round.append(raw_warp)
-                warped = resample(chunk, ratio=warp, converter_type='linear')
-                _, acc = self.head_switch_jitter(warped)
-                acc_trimmed = trim(acc, edge_trim)
-                loss = cost(acc_trimmed)
-                losses.append(loss)
-                try:
-                    image[row][col] = loss
-                except IndexError:
-                    print('Image indexes out of bounds %dx%d got %dx%d' %
-                          (columns, rows, col, row))
-                    assert False
-
-            r_id = int(np.where(np.array(losses) == np.min(losses))[0])
-                # self.loss_choose(losses)
-            ratios.append(dtwspace[r_id])
-            warps.append(warps_round[r_id])
-            losses.clear()
-            warps_round.clear()
-
-
-        warp_flat = self.list_flatten(warps)
-        ratio = len(data) / len(warp_flat)
-        warp = resample(warp_flat, ratio, converter_type='linear')
-
-        #print(len(data), len(warp_flat))
-        self.min_dev.append(100 * np.min(ratios))
-        self.max_dev.append(100 * np.max(ratios))
-        print('DTW pid %d avg speed slip - min: %.4f max: %.4f %%' % (self.pid, moving_average(self.min_dev, 1024), moving_average(self.max_dev, 1024)))
-        if self.plots:
-            vel0, acc0 = self.head_switch_jitter(data)
-            velw, accw = self.head_switch_jitter(np.array(warp))
-            dualplot_scope(np.cumsum(acc0), np.cumsum(accw))
-            plot_image(image)
-            plot_scope(ratios)
-        return image, warp
-
-    def list_flatten(self, list):
-        flatten = []
-        for buffer in list:
-            flatten.extend(buffer)
-        return flatten
-
-    def out_or_zero(self):
-        flatten = self.list_flatten(self.framebuffer)
-
-        if len(flatten) > self.blocklen:
-            head = flatten[:self.blocklen]
-            tail = flatten[self.blocklen:]
-            assert len(head) == self.blocklen
-            assert len(head) + len(tail) == len(flatten), 'expected %d got %d' % ( len(flatten), len(head) + len(tail) )
-            blockpos = self.blocklen * self.blockid
-            print('DTW pos: %d ->> tape slip: %d samples' % (blockpos, (len(tail) - self.blocklen)))
-            self.framebuffer.clear()
-            self.framebuffer.append(tail)
-            return head, True
-        else:
-            return np.zeros(self.blocklen), False
-
-    def velocity_compensatorB(self, data):
-        image, dewarp = self.loss_map(data)
-        if len(self.framebuffer) == 0:
-            self.framebuffer.append(dewarp)
-        self.framebuffer.append(dewarp)
-        self.blockid += 1
-        return self.out_or_zero()
-
-    def loss_choose(self, losses):
-        half = int(len(losses) / 2)
-        hi_loss = losses[:half]
-        lo_loss = np.flip(losses[half:])
-        hi_diff = np.diff(hi_loss)
-        lo_diff = np.diff(lo_loss)
-        if hi_diff[0] < lo_diff[0]:
-            comp_diff = hi_diff
-            sign = self.sign
-        else:
-            comp_diff = lo_diff
-            sign = self.sign * -1
-
-        sub_id = 0
-        id_limit = len(comp_diff) - 2
-        while comp_diff[sub_id+1] < comp_diff[sub_id] and sub_id < id_limit:
-            sub_id += 1
-
-        id = half + (sign * sub_id) - self.drift
-        return np.clip(id, a_min=0, a_max=len(losses) - 1)
