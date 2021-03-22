@@ -35,15 +35,49 @@ class HeadSwitchDetect:
         self.bandpass = FiltersClass(iir_bandpass[0], iir_bandpass[1], self.samp_rate)
 
 
+    def hhtdeFM(self, data):
+        instf, t = inst_freq(data)
+        return np.add(np.multiply(instf, -self.samp_rate), self.samp_rate /2)
+
+    def htdeFM(self, data):
+        return unwrap_hilbert(data, self.samp_rate)
+
+    def deFM(self, data):
+        return self.htdeFM(data)
+
     # Measures the head switch jitter
     def head_switch_jitter(self, data):
         narrowband = self.bandpass.lfilt(data.real)
-        freq = unwrap_hilbert(narrowband, self.samp_rate) - self.fdc
-        velocity = self.slow_filter.lfilt(freq)
+
+        freq = self.deFM(narrowband)
+        centered = np.add(freq, -self.offset)
+        # plot_scope(centered[:1024])
+
+        velocity = self.slow_filter.lfilt(centered)
+        velocity_offset = np.mean(velocity)
+        self.last_velocity_offset.append(velocity_offset)
+        average_vel_offset = moving_average(self.last_velocity_offset, window=10)
+        rel_velocity = np.add(
+            velocity,
+            -average_vel_offset
+        )
+
         acceleration = np.diff(velocity)
-        rel_velocity = np.cumsum(acceleration)
+
+        print('Average offset %.2f, max %.2f, min %.2f ' % (average_vel_offset, np.max(velocity), np.min(velocity)))
         return velocity, \
-               np.append(acceleration, acceleration[len(acceleration) - 1]),
+               np.append(acceleration, acceleration[len(acceleration) - 1]), \
+               average_vel_offset
+
+    # Measures the head switch jitter
+    #def head_switch_jitter(self, data):
+    #    narrowband = self.bandpass.lfilt(data.real)
+    #    freq = unwrap_hilbert(narrowband, self.samp_rate) - self.fdc
+    #    velocity = self.slow_filter.lfilt(freq)
+    #    acceleration = np.diff(velocity)
+    #    rel_velocity = np.cumsum(acceleration)
+    #    return velocity, \
+    #           np.append(acceleration, acceleration[len(acceleration) - 1]),
 
     def to_wave(self, ch0, ch1):
         ratio = self.audio_rate / self.samp_rate
