@@ -60,7 +60,6 @@ RFParams_NTSC_VHS["video_lpf_freq"] = 3600000
 
 # NTSC color under carrier is 40H
 RFParams_NTSC_VHS["color_under_carrier"] = (525 * (30 / 1.001)) * 40
-
 RFParams_NTSC_VHS["deemph_corner"] = 260000
 RFParams_NTSC_VHS["deemph_gain"] = 15
 

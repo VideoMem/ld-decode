@@ -25,7 +25,7 @@ SOURCES += \
     palcolour.cpp \
     paldecoder.cpp \
     rgb.cpp \
-    yuv.cpp \
+    ycbcr.cpp \
     sourcefield.cpp \
     transformpal.cpp \
     transformpal2d.cpp \
@@ -43,15 +43,15 @@ HEADERS += \
     framecanvas.h \
     monodecoder.h \
     ntscdecoder.h \
+    outputframe.h \
     palcolour.h \
     paldecoder.h \
     rgb.h \
-    yuv.h \
-    videoframe.h \
     sourcefield.h \
     transformpal.h \
     transformpal2d.h \
     transformpal3d.h \
+    ycbcr.h \
     yiq.h \
     ../library/filter/deemp.h \
     ../library/filter/firfilter.h \

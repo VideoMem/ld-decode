@@ -29,14 +29,14 @@
 
 #include "lddecodemetadata.h"
 
-#include "videoframe.h"
+#include "outputframe.h"
 
 // Context for drawing on top of a full-frame RGB image.
 class FrameCanvas {
 public:
     // rgbFrame is the frame to draw upon, and videoParameters gives its dimensions.
     // (Both parameters are captured by reference, not copied.)
-    FrameCanvas(videoFrame &videoFrame, const LdDecodeMetaData::VideoParameters &videoParameters);
+    FrameCanvas(OutputFrame &outputFrame, const LdDecodeMetaData::VideoParameters &videoParameters);
 
     // Return the edges of the active area.
     qint32 top();

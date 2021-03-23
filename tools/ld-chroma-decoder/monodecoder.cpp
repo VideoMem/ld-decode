@@ -28,9 +28,9 @@
 #include "decoderpool.h"
 #include "palcolour.h"
 
-MonoDecoder::MonoDecoder(const Comb::Configuration &combConfig)
+MonoDecoder::MonoDecoder(const MonoDecoder::Configuration &monoConfig)
 {
-    config.outputYUV = combConfig.outputYUV;
+    config = monoConfig;
 }
 
 bool MonoDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParameters) {
@@ -38,7 +38,38 @@ bool MonoDecoder::configure(const LdDecodeMetaData::VideoParameters &videoParame
 
     // Compute cropping parameters
     setVideoParameters(config, videoParameters);
+
     return true;
+}
+
+const char *MonoDecoder::getPixelName() const
+{
+    return config.outputYCbCr ? "GRAY16" : "RGB48";
+}
+
+bool MonoDecoder::isOutputY4m()
+{
+    return config.outputY4m;
+}
+
+QString MonoDecoder::getHeaders() const
+{
+    QString y4mHeader;
+    qint32 rateN = 30000;
+    qint32 rateD = 1001;
+    qint32 width = config.videoParameters.activeVideoEnd - config.videoParameters.activeVideoStart;
+    qint32 height = config.topPadLines + config.bottomPadLines +
+                    config.videoParameters.lastActiveFrameLine - config.videoParameters.firstActiveFrameLine;
+    QString y4mPixelAspect = (config.videoParameters.isWidescreen ? Y4M_PAR_NTSC_169 : Y4M_PAR_NTSC_43);
+    if (config.videoParameters.isSourcePal) {
+        rateN = 25;
+        rateD = 1;
+        y4mPixelAspect = (config.videoParameters.isWidescreen ? Y4M_PAR_PAL_169 : Y4M_PAR_PAL_43);
+    }
+    QTextStream(&y4mHeader) << "YUV4MPEG2 W" << width << " H" << height << " F" << rateN << ":" << rateD
+                            << " I" << y4mFieldOrder << " A" << y4mPixelAspect
+                            << (config.pixelFormat == YUV444P16 ? Y4M_CS_YUV444P16 : Y4M_CS_GRAY16);
+    return y4mHeader;
 }
 
 QThread *MonoDecoder::makeThread(QAtomicInt& abort, DecoderPool& decoderPool) {
@@ -49,22 +80,21 @@ MonoThread::MonoThread(QAtomicInt& _abort, DecoderPool& _decoderPool,
                      const MonoDecoder::Configuration &_config, QObject *parent)
     : DecoderThread(_abort, _decoderPool, parent), config(_config)
 {
-    // Resize and clear the output buffer
+    // Resize and clear the output buffers
     const qint32 frameHeight = (config.videoParameters.fieldHeight * 2) - 1;
-    outputFrame.RGB.resize(config.videoParameters.fieldWidth * frameHeight * 3);
-    outputFrame.RGB.fill(0);
-
-    outputFrame.y.resize(config.videoParameters.fieldWidth * frameHeight);
-    outputFrame.y.fill(16*256);
-    outputFrame.u.resize(config.videoParameters.fieldWidth * frameHeight);
-    outputFrame.u.fill(128*256);
-    outputFrame.v.resize(config.videoParameters.fieldWidth * frameHeight);
-    outputFrame.v.fill(128*256);
-
+    if (config.outputYCbCr) {
+        outputFrame.Y.resize(config.videoParameters.fieldWidth * frameHeight);
+        outputFrame.Y.fill(16 * 256);
+        outputFrame.Cb.resize(0);
+        outputFrame.Cr.resize(0);
+    } else {
+        outputFrame.RGB.resize(config.videoParameters.fieldWidth * frameHeight * 3);
+        outputFrame.RGB.fill(0);
+    }
 }
 
 void MonoThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                              QVector<videoFrame> &outputFrames)
+                              QVector<OutputFrame> &outputFrames)
 {
     // Work out black-white scaling factors
     const LdDecodeMetaData::VideoParameters &videoParameters = config.videoParameters;
@@ -74,18 +104,16 @@ void MonoThread::decodeFrames(const QVector<SourceField> &inputFields, qint32 st
         // Interlace the active lines of the two input fields to produce an output frame
         for (qint32 y = config.videoParameters.firstActiveFrameLine; y < config.videoParameters.lastActiveFrameLine; y++) {
             const SourceVideo::Data &inputFieldData = (y % 2) == 0 ? inputFields[fieldIndex].data : inputFields[fieldIndex + 1].data;
-
-            // Each quint16 input becomes three quint16 outputs
             const quint16 *inputLine = inputFieldData.data() + ((y / 2) * videoParameters.fieldWidth);
-
-            if (config.outputYUV) {
+            if (config.outputYCbCr) {
                 const double whiteScale = 219.0 * 257.0 / (videoParameters.white16bIre - blackOffset);
                 for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
-                    quint16 value = static_cast<quint16>(qBound(0.0, (inputLine[x] - blackOffset) * whiteScale + 16*256, 65535.0));
-                    quint16 *outputLine = outputFrame.y.data() + (y * videoParameters.fieldWidth);
+                    quint16 value = static_cast<quint16>(qBound(1.0 * 256.0, (inputLine[x] - blackOffset) * whiteScale + 16 * 256, 254.75 * 256.0));
+                    quint16 *outputLine = outputFrame.Y.data() + (y * videoParameters.fieldWidth);
                     outputLine[x] = value;
                 }
             } else {
+                // Each quint16 input becomes three RGB quint16 outputs
                 const double whiteScale = 65535.0 / (videoParameters.white16bIre - blackOffset);
                 for (qint32 x = videoParameters.activeVideoStart; x < videoParameters.activeVideoEnd; x++) {
                     quint16 value = static_cast<quint16>(qBound(0.0, (inputLine[x] - blackOffset) * whiteScale, 65535.0));

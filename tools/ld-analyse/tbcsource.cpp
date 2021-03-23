@@ -536,7 +536,7 @@ QImage TbcSource::generateQImage(qint32 frameNumber)
         // Chroma decode the current frame and display
 
         // Decode colour for the current frame, to RGB 16-16-16 interlaced output
-        QVector<videoFrame> outputFrames(1);
+        QVector<OutputFrame> outputFrames(1);
         if (videoParameters.isSourcePal) {
             // PAL source
             palColour.decodeFrames(inputFields, startIndex, endIndex, outputFrames);

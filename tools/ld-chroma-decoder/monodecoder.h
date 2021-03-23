@@ -42,8 +42,11 @@ class DecoderPool;
 // Decoder that passes all input through as luma, for purely monochrome sources
 class MonoDecoder : public Decoder {
 public:
-    MonoDecoder(const Comb::Configuration &combConfig);
+    MonoDecoder(const MonoDecoder::Configuration &monoConfig);
     bool configure(const LdDecodeMetaData::VideoParameters &videoParameters) override;
+    const char *getPixelName() const override;
+    bool isOutputY4m() override;
+    QString getHeaders() const override;
     QThread *makeThread(QAtomicInt& abort, DecoderPool& decoderPool) override;
 
 private:
@@ -60,14 +63,14 @@ public:
 
 protected:
     void decodeFrames(const QVector<SourceField> &inputFields, qint32 startIndex, qint32 endIndex,
-                      QVector<videoFrame> &outputFrames) override;
+                      QVector<OutputFrame> &outputFrames) override;
 
 private:
     // Settings
     const MonoDecoder::Configuration &config;
 
     // The frame being assembled
-    videoFrame outputFrame;
+    OutputFrame outputFrame;
 };
 
 #endif // MONODECODER
